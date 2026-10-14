@@ -134,7 +134,7 @@ Chart.js 的 `'time'`/`'timeseries'` 轴类型本身依赖日期适配器（如 
 
 ### `paint()` 接管 / 尊重的字段一览
 
-`DS.charts.paint(config)` 在 `create()` 和每次主题切换触发的 `retheme()` 时都会重新跑一遍，把当前主题的颜色/布局惯例写进传入的 Chart.js config。哪些字段会被它接管、哪些会尊重调用方自己的配置，历史上多次因为没写清楚而被复审反复挖出同类问题（额外轴网格默认值、类目轴 `ticks.callback`、现在这张表里的 `layout.padding.top`），这里一次性列清楚：
+`DS.charts.paint(config)` 在 `create()` 和每次主题切换触发的 `retheme()` 时都会重新跑一遍，把当前主题的颜色/布局惯例写进传入的 Chart.js config。哪些字段会被它接管、哪些会尊重调用方自己的配置，历史上多次因为没写清楚而被复审反复挖出同类问题（额外轴网格默认值、类目轴 `ticks.callback`），这里一次性列清楚：
 
 **始终接管**（每次 `paint()`/`retheme()` 都会覆盖成当前主题值，调用方设了也没用）：
 
@@ -151,12 +151,18 @@ Chart.js 的 `'time'`/`'timeseries'` 轴类型本身依赖日期适配器（如 
 
 | 字段 | 默认值 |
 |---|---|
-| `options.layout.padding.top` | `30`（给图表工具条让出顶部空间，见下方决策记录） |
 | `options.interaction` | `{ mode: 'index', intersect: false }` |
 | `options.plugins.tooltip.mode`/`intersect` | `'index'` / `false` |
 | 额外轴（非 `x`/`y`）的 `grid.drawOnChartArea` | `false` |
 | 类目轴的 `ticks.callback` | 超长标签截断逻辑 |
 | `dataset.backgroundColor`/`borderColor`——调用方显式提供了初始值的那一侧 | 保留调用方的值，不管之后 retheme 多少次 |
+
+**不是字段级覆盖，而是 `paint()`/`create()` 的其他隐性行为**（决定的是"要不要做某件事"，不是"把某个字段覆盖成什么值"，但同样容易被忽略，一并摊开）：
+
+| 行为 | 触发条件 |
+|---|---|
+| 要不要在 `options.scales` 里创建某个 scale key（典型是 `x`/`y` 这两根"主轴"） | 只有类目轴（`zoomAxisFor()` 判定出的那一个）和被某个 dataset 的 `xAxisID`/`yAxisID` 显式引用过的轴才会被创建；调用方自己在 `options.scales` 里声明过的轴，不管有没有 dataset 引用，也会保留。不满足这两个条件就不创建——否则会出现「幽灵轴」：Chart.js 一旦在 `options.scales` 里看到某个 key，哪怕没有数据集真正用它，也会把它当成一根真实坐标轴实例化并绘制，量程退化成默认的 `0..1`。见「技术陷阱」#20。 |
+| 要不要给 `options.layout.padding.top` 注入 `30`（给悬浮工具条让出顶部空间） | **不在 `paint()`/`retheme()` 里做**，是 `create()`（`new Chart()` 和 `_mountToolbar()` 都跑完之后）做一次一次性后验校正（内部方法 `DS.charts._fitToolbarLegend()`）：容器高度低于 150px（compact 规格 90px 必在其中）直接豁免；图例不存在/被关闭/不在顶部也豁免；都不豁免的话，再用图例的逐项命中框（`legend.legendHitBoxes`）和工具条 DOM 的真实包围盒做矩形相交判断，真的会被压住才注入，不会被压住就不注入——单项图例、或图例虽多项但当前画布够宽、水平方向够不到工具条所在的角落，都不会被加这段留白。调用方自己配置过 `layout.padding.top` 的话优先尊重，永远不会被这段逻辑覆盖。`create()` 还把 `chart.resize` 包了一层，之后任何一次 `resize()`——本库全屏按钮触发的、调用方自己手动调的，还是 Chart.js 内置 `ResizeObserver` 在容器尺寸变化（包括从隐藏标签页变可见）时自动触发的——都会顺带重新判一次，大多数场景不需要调用方知道 `_fitToolbarLegend` 这个方法的存在。唯一仍需调用方手动补调 `chart.resize()` 的，是本仓库这种不支持 `ResizeObserver` 依赖的 `requestAnimationFrame` 的特殊测试环境（headless chromium 的 `--virtual-time-budget` 模式）——这是这类环境本身的已知限制，`demo.js` 的 selftest 套件已经对受影响的图表手动补了 `resize()`，可以直接参考。见「技术陷阱」#23 和 `src/charts.js` 里 `TOOLBAR_TOP_RESERVE` 定义处的完整说明。 |
 
 **完全不碰**：各轴的 `min`/`max`/`stacked`/`position`/`title` 等除上表列出的子属性之外的任何配置、`options.plugins.tooltip.callbacks`、`options.plugins.title` 等其余插件配置、`dataset.fill`/`tension`/`type`/`xAxisID`/`yAxisID`/`borderDash` 等除颜色外的任何数据集属性——调用方想怎么配就怎么配。
 
@@ -194,7 +200,12 @@ Chart.js 的 `'time'`/`'timeseries'` 轴类型本身依赖日期适配器（如 
 20. **额外坐标轴不能无条件创建。** 笛卡尔图的 `x`/`y` 两根"主轴"只有在真的被某个 dataset 引用时才该出现在 `options.scales` 里——如果全部数据集都把 `yAxisID` 指到自定义轴（比如双轴图里只要一根竖轴、全部指向 `y1`），强行 `o.scales.y = o.scales.y || {}` 捏一个空对象出来，Chart.js 会把它当成一根真实坐标轴实例化并绘制：没有数据可读，量程退化成默认的 `0..1`，是一根跟真实数据毫无关系的幽灵轴，而且因为它被当成"主轴"处理，不受额外轴 `grid.drawOnChartArea` 默认规则约束，网格线照样画，比压根没有这根轴更容易误导人。判断"要不要创建"时，类目轴（`zoomAxisFor()` 判定出的那一个）永远例外——它是整张图"索引"维度的载体，不依赖某个 dataset 显式指定轴 ID；调用方自己在 `options.scales` 里显式声明过的轴，不管有没有 dataset 引用，也要保留，不能被这条规则反过来删掉。
 21. **雷达图 / 极区图的 `r` 轴不能被当成"没有坐标轴"而整个跳过主题注入。** pie/doughnut 确实没有任何坐标轴，但 radar 和 polarArea 共用 `RadialLinearScale`（默认轴名 `r`），同样需要把网格、角线、刻度文字、刻度颜色都换成主题色——不注入的话深色主题下这些元素会停留在 Chart.js 的默认浅色值，刻度数字背后还会带一块默认的半透明白底，在深色背景上非常突兀，需要显式关掉。polarArea 比较容易被漏掉：它同时属于"弧形族"（数据集按扇区数组着色），实现时容易默认"弧形族都不需要坐标轴注入"，但它的坐标轴注入和数据集着色是两条独立要走的路径，不能因为走了其中一条就把另一条也跳过。
 22. **色板里非十六进制格式的 CSS 变量必须有降级路径，不能静默产出非法颜色值。** 把十六进制颜色转成 `rgba(...)` 实现半透明填充这类场景，必须先校验解析出的数值分量不是 `NaN`——色板 token 一旦换成 `rgb()`/`hsl()`/颜色关键字这类非十六进制格式（README 本身就鼓励使用者替换整套色板），字符串解析会失败但不抛错，产出一条带 `NaN` 的非法 `rgba()` 字符串，浏览器判定整条 CSS 属性无效、对应的填充直接画不出来，且控制台没有任何报错或警告，复现和排查成本都很高。退化方案：解析失败就放弃转换、原样使用调用方给的颜色字符串（填充退化成不透明色块，牺牲的是次要的视觉效果，不是整块图形消失）。
-23. **多数据集图表的图例不能默认贴着画布顶部画，要给悬浮工具条留出空间。** 图表的缩放工具条用 `position: absolute` 悬浮在宿主右上角，Chart.js 默认把图例画在画布最顶上——数据集一多、图例换行或变宽，最右边的条目可能被工具条压住看不全。只有 1 项图例的图表不会暴露这个问题（图例本来就短，伸不到工具条所在的角落），但这是所有挂了工具条的图表共有的风险，不是某一张图单独的毛病，必须在通用的绘制逻辑里用一段固定的顶部留白（`layout.padding.top`）统一解决，不能等某张具体的图表"恰好暴露了"才针对性地改那一张。验证"图例没被压住"要用两边的真实几何位置比较（工具条 DOM 元素的 `getBoundingClientRect()` 和 Chart.js 布局引擎算出来的图例框坐标），不能只回显配置本身。
+23. **多数据集图表的图例可能被悬浮工具条压住，但留白必须按需注入，不能无条件给所有图表都加。** 图表的缩放工具条用 `position: absolute` 悬浮在宿主右上角，Chart.js 默认把图例画在画布最顶上——数据集一多、图例换行或变宽，最右边的条目可能被工具条压住看不全（复审实测：三项图例的堆叠柱状图，第三项"设备C"被压得只剩"设备"二字）。**这条规则第一版的实现本身就是一次"修 bug 引入新隐患"的教训**：当时图省事，让 `paint()` 对所有笛卡尔图无条件注入 `layout.padding.top = 30`——确实堵住了压字的问题，但代价是所有图表（包括图例只有 1 项、根本不可能伸到工具条角落的图表）都要白白损失这 30px 绘图区，`.ds-chart-host--compact`（components.css 里正式支持的 90px 矮宿主规格）配上真实数据时绘图区直接被压到 1.6px，图表事实上不可用——compact 的唯一既有用例（空数据态）走的是空数据早退分支，`paint()` 根本没跑到，这个破损一直没被测出来。
+    正确的做法是按需留白：容器矮于一个阈值（150px，compact 规格 90px 必在其中）直接豁免；图例不在顶部/被关闭也豁免；都不豁免的话，用图例的逐项命中框（`chart.legend.legendHitBoxes`，Chart.js 4.4.0 下渲染后即可读，和 `chart.width`/`canvas.width` 同一坐标系）和工具条 DOM 的真实包围盒（`getBoundingClientRect()`，工具条宽度随滚轮模式提示文案变化，不能用固定估值）做矩形相交判断，真的会被压住才注入 `layout.padding.top`，不重叠就不注入。这段判断不能放在 `paint()`/`retheme()` 里做——图例和工具条都要等 `new Chart()` 和 `_mountToolbar()` 跑完之后才有真实几何可读，`paint()` 执行的时候两者都还不存在——改成 `create()` 里跑完这两步之后做一次一次性后验校正（`DS.charts._fitToolbarLegend()`）。
+    容器后续被缩放/图例因为换行而变化怎么办？`create()` 额外把 `chart.resize` 实例级地包了一层，之后任何一次 `resize()`——全屏按钮触发的、调用方自己手动调的，还是 Chart.js 内置 `ResizeObserver` 在容器尺寸变化（包括从隐藏标签页变可见）时自动触发的——都会在 resize 完成后顺带重新判一次。已实测验证：用真实的 `--headless=new`（不是冻结渲染循环的 `--virtual-time-budget` 模式）加载 demo 页，只做标签页切换、不手动调任何 `resize()`，三项图例的堆叠柱状图依然正确避开了工具条，说明 `ResizeObserver` 确实会调用到这层包装，绝大多数真实使用场景不需要调用方知道 `_fitToolbarLegend` 这个方法的存在。唯一仍需调用方手动补调 `chart.resize()`（从而连带触发这次重判）的，是本仓库这种本身就不支持 `ResizeObserver` 依赖的 `requestAnimationFrame` 的特殊测试环境——这是这类环境本来就有的已知限制，不是这次改动新引入的，`demo.js` 的 selftest 套件已经对受影响的图表手动补了 `resize()`。只包 `resize` 不包 `update`：`_fitToolbarLegend()` 自己需要调整时只调用 `chart.update()`，不会递归触发这层包装。
+    这里还有一个容易踩的反直觉细节：判断"是否重叠"时，图例命中框的纵坐标必须先减去"当前已经由我们自己注入的留白量"再比较，不能直接拿命中框的当前坐标判断——留白一旦生效，图例会被推到工具条纵向范围以下，这时候如果不做这个还原，会读到"现在不重叠了"，反而把刚加上的留白当成不需要而撤销掉，形成"加留白→查出不重叠→撤销→又重叠"的判定来回（这是在尝试过用 Chart.js 插件的 `afterLayout` 钩子全局接管"每次布局都重判"时实测发现的——`afterLayout` 每次布局都触发，频率比"只在 resize 时重判"高得多，更容易暴露这条反馈环；改成归一化判断之后，不管挂在哪个触发时机上都不会再来回震荡，最终选择只挂 `resize` 是因为这个场景下真正需要重判的时刻就是容器尺寸变化的时刻，没必要挂更高频的钩子）。
+    另外，往 `chart.config.options`（`create()` 时存进 registry 的那份普通对象）上写，不能写 `chart.options`（Chart.js 的 resolver Proxy）——对后者做 `o.layout = o.layout || {}` 这种自赋值会在 Proxy 内部触发自引用，实测直接抛 `RangeError: Maximum call stack size exceeded`，和「技术陷阱」#9 踩的是同一个坑。
+    验证"图例没被压住"要用两边的真实几何位置比较（工具条 DOM 元素的 `getBoundingClientRect()` 和图例的逐项命中框），不能只回显配置本身，也不能只比较"图例整体顶边 vs 工具条底边"这种粗判断——画布足够宽时两者水平方向根本碰不到，粗判断会把"根本不需要留白、也确实没被压住"的正常状态误判成需要留白。
 
 ### 测试纪律
 

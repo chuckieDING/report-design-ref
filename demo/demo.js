@@ -928,6 +928,11 @@
     // 中间状态遗留给后面的 wheel 套件（它要用 barChart 做真实鼠标坐标测试）。
     document.querySelector('[data-panel="p-comp"]').click();
     [longChart, hbarChart, pieChart, scatterChart].forEach(function (c) {
+      // c.resize() 顺带会重新判一次要不要给工具条让出顶部空间（charts.js
+      // create() 里包了一层 chart.resize()，见 TOOLBAR_TOP_RESERVE 定义处
+      // 的说明）——这些图表创建时宿主还是隐藏的（clientHeight=0，当时直接
+      // 判"不需要"），这次 resize() 第一次给它们真实尺寸，同一次调用里就
+      // 补上了，不需要额外再调。
       if (c) { c.resize(); c.update('none'); }
     });
 
@@ -1639,6 +1644,10 @@
   window.DS_SELFTEST_SUITES.push(function reportCharts(A) {
     document.querySelector('[data-panel="p-comp"]').click();
     [comboChart, stackedChart, areaChart, timeaxisChart].forEach(function (c) {
+      // 同上一个套件：c.resize() 顺带重新判一次要不要给工具条让出顶部
+      // 空间。stackedChart 的三项图例正是"按需留白"这条规则要保护的真实
+      // 场景——创建时宿主隐藏判定过"不需要"，这次 resize() 第一次给它真实
+      // 尺寸，同一次调用里就补上了。
       if (c) { c.resize(); c.update('none'); }
     });
 
@@ -1826,17 +1835,37 @@
     // 线上可见的破损（复审实测）：三项图例的这张堆叠柱，图例第三项"设备C"
     // 曾经被 .ds-chart-toolbar（position:absolute，悬浮在宿主右上角）整个
     // 压住，深浅主题都复现——单项图例的既有图表从没暴露过这个问题。真正
-    // 验证"不再被压住"要用两边的真实几何位置比较，不是回读配置回声：工具条
-    // 在 DOM 里的 getBoundingClientRect() 相对画布顶部的下边缘，必须不晚于
-    // Chart.js 布局引擎真实算出来的图例顶边（chart.legend.top，Chart.js 的
-    // 布局阶段算完之后才有这个值，不是我们自己拍的数字）。
+    // 验证"不再被压住"要用两边的真实几何位置比较，不是回读配置回声。
+    //
+    // 这里不能再用"legend.top 必须不早于工具条下边缘"这种整体粗判断——
+    // "按需留白"改版之后，图表是否需要让出顶部空间取决于图例的逐项命中框
+    // 是否真的会落进工具条的横向范围，跟当前这块画布具体多宽有关（charts.js
+    // 里 legendOverlapsToolbar() 的同一份判断）；画布足够宽时legend 两者
+    // 水平方向根本不会碰到，legend.top 留在 Chart.js 默认值（没有额外留白）
+    // 也完全正确，用旧的粗判断反而会把"根本不需要留白、也确实没被压住"的
+    // 正常状态误判成"失败"。改成跟库内部同一套逐项命中框 vs 工具条包围盒
+    // 的矩形相交判断，不管这张图在当前视口宽度下最终有没有被补上留白，只
+    // 要图例的任何一项命中框都不落进工具条范围，就是真正"不被遮挡"。
     var stackedToolbarEl = stackedChart.canvas.parentNode.querySelector('.ds-chart-toolbar');
     var stackedToolbarRect = stackedToolbarEl.getBoundingClientRect();
     var stackedCanvasRect = stackedChart.canvas.getBoundingClientRect();
-    var stackedToolbarBottomRelToCanvas = stackedToolbarRect.bottom - stackedCanvasRect.top;
+    var stackedToolbarRel = {
+      left: stackedToolbarRect.left - stackedCanvasRect.left,
+      right: stackedToolbarRect.right - stackedCanvasRect.left,
+      top: stackedToolbarRect.top - stackedCanvasRect.top,
+      bottom: stackedToolbarRect.bottom - stackedCanvasRect.top
+    };
+    var stackedOverlappingHitbox = (stackedChart.legend.legendHitBoxes || []).find(function (hb) {
+      var hLeft = hb.left, hRight = hb.left + hb.width, hTop = hb.top, hBottom = hb.top + hb.height;
+      return hLeft < stackedToolbarRel.right && hRight > stackedToolbarRel.left &&
+        hTop < stackedToolbarRel.bottom && hBottom > stackedToolbarRel.top;
+    });
     A.check('ch-stacked-legend-not-covered-by-toolbar',
-      stackedChart.legend.top >= stackedToolbarBottomRelToCanvas,
-      'legend.top=' + stackedChart.legend.top + ' toolbarBottom=' + stackedToolbarBottomRelToCanvas);
+      !stackedOverlappingHitbox,
+      'overlapping hitbox=' + JSON.stringify(stackedOverlappingHitbox) +
+        ' toolbarRel=' + JSON.stringify(stackedToolbarRel) +
+        ' paddingTop=' + (stackedChart.options.layout && stackedChart.options.layout.padding &&
+          stackedChart.options.layout.padding.top));
 
     // 真正验证"堆叠"本身：最上面一段柱子的顶部像素，应该落在"三段累加值"
     // 对应的像素位置，而不是它自己的值单独从 0 起算的位置——这是
@@ -1893,6 +1922,158 @@
     });
     A.check('ch-stacked-percent-toggle-off-restores-raw', restoredOk,
       stackedChart.data.datasets.map(function (d) { return d.data.join('/'); }).join(' | '));
+
+    // ---------------- 按需留白（修 bug 引入的新隐患）----------------
+    // 复审发现：paint() 此前无条件给所有笛卡尔图注入 layout.padding.top=30
+    // 来避让工具条，代价是单项图例的普通图表平白损失一截绘图区，
+    // .ds-chart-host--compact（90px）配真实数据时绘图区被压到仅剩 1.6px，
+    // 事实上不可用——compact 的唯一既有用例（c-empty）走的是空数据早退
+    // 分支，paint() 根本没跑到，没暴露。这里用三个不依赖响应式网格实际宽度
+    // （不想被视口大小摆布）的独立 scratch 图表直接验证新行为。
+
+    // 1) 单项图例的普通图表：不应该被加留白。
+    (function () {
+      var host = document.createElement('div');
+      host.className = 'ds-chart-host';
+      var canvas = document.createElement('canvas');
+      host.appendChild(canvas);
+      document.body.appendChild(host);
+      var chart = DS.charts.create(canvas, {
+        type: 'line',
+        data: { labels: ['a', 'b', 'c'], datasets: [{ label: 'v', data: [1, 2, 3] }] }
+      });
+      var paddingTop = (chart.options.layout && chart.options.layout.padding &&
+        chart.options.layout.padding.top) || 0;
+      A.check('ch-toolbar-pad-single-legend-no-padding', paddingTop === 0,
+        'got paddingTop=' + paddingTop);
+      DS.charts.destroy(chart);
+      host.remove();
+    })();
+
+    // 2) compact 容器（90px）配真实数据：不应该被加留白，绘图区必须可用——
+    // 这正是本次要修的那个具体破损（复现条件：三项图例 + 90px 矮宿主）。
+    // 宽度刻意收窄到 450px（跟下面第 3 个用例同一个已验证会触发真实重叠的
+    // 宽度）：如果只用默认宽度，图例横向伸不到工具条所在的列，不管
+    // LEGEND_TOOLBAR_MIN_HOST_HEIGHT 这条矮宿主豁免有没有生效，重叠判断
+    // 本身都会算出"不重叠"，测不出矮宿主豁免这条规则是否真的在工作
+    // （变异验证过：只删掉高度豁免、留着重叠判断，默认宽度下这条断言测
+    // 不出区别）。收窄宽度后，不豁免的话重叠判断会判真，断言才有鉴别力。
+    (function () {
+      var host = document.createElement('div');
+      host.className = 'ds-chart-host ds-chart-host--compact';
+      host.style.width = '450px';
+      var canvas = document.createElement('canvas');
+      host.appendChild(canvas);
+      document.body.appendChild(host);
+      var chart = DS.charts.create(canvas, {
+        type: 'bar',
+        data: {
+          labels: stackedLabels,
+          datasets: stackedRaw.map(function (d) { return { label: d.label, data: d.data.slice() }; })
+        },
+        options: { scales: { x: { stacked: true }, y: { stacked: true } } }
+      });
+      var paddingTop = (chart.options.layout && chart.options.layout.padding &&
+        chart.options.layout.padding.top) || 0;
+      var chartAreaHeight = chart.chartArea.bottom - chart.chartArea.top;
+      A.check('ch-toolbar-pad-compact-no-padding', paddingTop === 0,
+        'got paddingTop=' + paddingTop);
+      // 90px 宿主，之前无条件 +30px 会把绘图区压到 1.6px（实测复现过，
+      // 90 - 图例一行 - x 轴刻度一行 - 30px 留白 几乎吃光）；这里只要求
+      // 绘图区明显超过那个坏值（实测修复后约 29.6px），用 20px 做下限——
+      // 比"1.6px"远得多、足以抓住"又无条件注入了 30px 留白"这类回归，也
+      // 给 Chart.js 版本升级后图例/刻度几像素的正常波动留了余量。
+      A.check('ch-toolbar-pad-compact-chart-area-usable', chartAreaHeight >= 20,
+        'got chartAreaHeight=' + chartAreaHeight + ' (host 90px)');
+      DS.charts.destroy(chart);
+      host.remove();
+    })();
+
+    // 3) 三项图例的堆叠柱：在足够窄的宿主下（复现条件——c-stacked 本身在
+    // 当前视口宽度下不一定窄到会撞上工具条，不能拿它单独验证"修复确实生
+    // 效"，必须用固定宽度排除视口影响），工具条必须被正确避让，图例每一
+    // 项命中框都不能落进工具条的矩形范围。
+    (function () {
+      var host = document.createElement('div');
+      host.className = 'ds-chart-host';
+      host.style.width = '450px';
+      var canvas = document.createElement('canvas');
+      host.appendChild(canvas);
+      document.body.appendChild(host);
+      var chart = DS.charts.create(canvas, {
+        type: 'bar',
+        data: {
+          labels: stackedLabels,
+          datasets: stackedRaw.map(function (d) { return { label: d.label, data: d.data.slice() }; })
+        },
+        options: { scales: { x: { stacked: true }, y: { stacked: true } } }
+      });
+      var toolbarEl = chart.canvas.parentNode.querySelector('.ds-chart-toolbar');
+      var toolbarRect = toolbarEl.getBoundingClientRect();
+      var canvasRect = chart.canvas.getBoundingClientRect();
+      var toolbarRel = {
+        left: toolbarRect.left - canvasRect.left, right: toolbarRect.right - canvasRect.left,
+        top: toolbarRect.top - canvasRect.top, bottom: toolbarRect.bottom - canvasRect.top
+      };
+      var overlapping = (chart.legend.legendHitBoxes || []).find(function (hb) {
+        var hLeft = hb.left, hRight = hb.left + hb.width, hTop = hb.top, hBottom = hb.top + hb.height;
+        return hLeft < toolbarRel.right && hRight > toolbarRel.left &&
+          hTop < toolbarRel.bottom && hBottom > toolbarRel.top;
+      });
+      A.check('ch-toolbar-pad-narrow-stacked-legend-protected', !overlapping,
+        'overlapping=' + JSON.stringify(overlapping) + ' toolbarRel=' + JSON.stringify(toolbarRel) +
+          ' paddingTop=' + (chart.options.layout && chart.options.layout.padding &&
+            chart.options.layout.padding.top));
+      DS.charts.destroy(chart);
+      host.remove();
+    })();
+
+    // 4) 创建时宿主隐藏（clientHeight=0，create() 当时直接判"不需要"留白），
+    // 之后变可见并调用原生 chart.resize()——不手动调用
+    // DS.charts._fitToolbarLegend()——留白判断应该照样自动补上。这验证的
+    // 是 create() 里给 chart.resize 包的那层：不管是调用方自己调
+    // resize()，还是 Chart.js 内置 ResizeObserver 自动调用，都应该经过
+    // 同一层包装重新判一次（demo 页里"组件全览"标签页下那几张图表能在
+    // 真实浏览器里不被压住，靠的就是这层包装，不是手动调用）。
+    (function () {
+      var hiddenWrap = document.createElement('div');
+      hiddenWrap.style.display = 'none';
+      document.body.appendChild(hiddenWrap);
+      var host = document.createElement('div');
+      host.className = 'ds-chart-host';
+      host.style.width = '450px';
+      var canvas = document.createElement('canvas');
+      host.appendChild(canvas);
+      hiddenWrap.appendChild(host);
+      var chart = DS.charts.create(canvas, {
+        type: 'bar',
+        data: {
+          labels: stackedLabels,
+          datasets: stackedRaw.map(function (d) { return { label: d.label, data: d.data.slice() }; })
+        },
+        options: { scales: { x: { stacked: true }, y: { stacked: true } } }
+      });
+      var paddingWhileHidden = (chart.options.layout && chart.options.layout.padding &&
+        chart.options.layout.padding.top) || 0;
+      hiddenWrap.style.display = '';
+      chart.resize(); // 不手动调 DS.charts._fitToolbarLegend()
+      var toolbarEl = chart.canvas.parentNode.querySelector('.ds-chart-toolbar');
+      var toolbarRect = toolbarEl.getBoundingClientRect();
+      var canvasRect = chart.canvas.getBoundingClientRect();
+      var toolbarRel = {
+        left: toolbarRect.left - canvasRect.left, right: toolbarRect.right - canvasRect.left,
+        top: toolbarRect.top - canvasRect.top, bottom: toolbarRect.bottom - canvasRect.top
+      };
+      var overlappingAfterReveal = (chart.legend.legendHitBoxes || []).find(function (hb) {
+        var hLeft = hb.left, hRight = hb.left + hb.width, hTop = hb.top, hBottom = hb.top + hb.height;
+        return hLeft < toolbarRel.right && hRight > toolbarRel.left &&
+          hTop < toolbarRel.bottom && hBottom > toolbarRel.top;
+      });
+      A.check('ch-toolbar-pad-resize-wrapper-auto-refits', paddingWhileHidden === 0 && !overlappingAfterReveal,
+        'paddingWhileHidden=' + paddingWhileHidden + ' overlappingAfterReveal=' + JSON.stringify(overlappingAfterReveal));
+      DS.charts.destroy(chart);
+      hiddenWrap.remove();
+    })();
 
     // ---------------- 面积图 ----------------
     A.check('ch-area-created', areaChart !== null, '');

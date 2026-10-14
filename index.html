@@ -716,17 +716,117 @@ window.DS = window.DS || {};
   }
 
   // 工具条（放大/缩小/复位/全屏）用 position:absolute 悬浮在宿主右上角，
-  // 按钮 22px 高、顶部偏移 4px（见 components.css .ds-chart-toolbar /
-  // .ds-chart-btn）。Chart.js 默认把图例画在画布最顶上，多数据集图表的
-  // 图例一旦够宽，最右边的条目会被工具条整个盖住（复审实测：三项图例的
-  // 堆叠柱状图，第三项"设备C"被压得只剩"设备"二字，深浅主题都复现）。
-  // 此前没暴露是因为这批之前所有笛卡尔图的图例都只有 1 项，不会伸到右上
-  // 角。这是通用问题——所有笛卡尔图都挂同一个工具条，不是某一张图单独的
-  // 毛病，所以在库层面用 layout.padding.top 给"图例 + 绘图区"这整块内容
-  // 统一让出一段顶部留白，工具条的落点完全在这段留白里，不管图例有几项、
-  // 多宽都不会被压住。30px 留了几像素余量（22+4=26）。只在调用方没有自己
-  // 配置 layout.padding.top 时才补这个默认值，见 paint() 里的用法。
+  // Chart.js 默认把图例画在画布最顶上，多数据集图表的图例一旦够宽，最右边
+  // 的条目会被工具条整个盖住（复审实测：三项图例的堆叠柱状图，第三项
+  // "设备C"被压得只剩"设备"二字，深浅主题都复现）。此前没暴露是因为这批
+  // 之前所有笛卡尔图的图例都只有 1 项，不会伸到右上角。
+  //
+  // 这里曾经的修法是 paint() 无条件给所有笛卡尔图注入
+  // `layout.padding.top = 30`——对"图例+绘图区"整体让出一段顶部留白，简单
+  // 但代价是**所有**笛卡尔图都要付这 30px，不管这张图的图例有没有可能伸到
+  // 工具条所在的角落。后果在小容器上暴露得最明显：`.ds-chart-host--compact`
+  // （components.css 里正式支持的 90px 矮宿主规格）配上真实数据时，绘图区
+  // 被压到只剩 1.6px（实测复现），图表事实上不可用——compact 规格本来就
+  // 不可能撞上工具条（宿主矮到工具条按钮都放不下的程度），这 30px 纯粹是
+  // 陪绑。
+  //
+  // 现在改成按需留白：不在 paint() 里无条件写，而是在 create() 里
+  // `new Chart()`、`_mountToolbar()` 都跑完之后做一次性后验校正——这时候
+  // 图例已经真实布局过（`chart.legend.legendHitBoxes` 可读，逐项命中框，
+  // 和 `chart.width`/`canvas.width` 同一坐标系，已实测确认），工具条 DOM
+  // 也已经挂上（`getBoundingClientRect()` 能量出它的真实占位，包括随滚轮
+  // 模式变化的提示文案宽度——不用固定估值）。两边都是真实几何坐标，拿来
+  // 判断是否真的重叠，重叠才补 `layout.padding.top`，不重叠（单项图例、
+  // 或容器矮于 `LEGEND_TOOLBAR_MIN_HOST_HEIGHT` 这种工具条本来就不会贴上去
+  // 的情形）就不补——见 `_fitToolbarLegend()`。
+  //
+  // 创建时是一次性判定，不会随后续容器缩放自动重新检测——但 create() 里
+  // 把 chart.resize 包了一层（见那里的说明），之后任何一次 resize()，不管
+  // 是本库全屏按钮触发的、调用方自己手动调的，还是 Chart.js 内置
+  // ResizeObserver 在容器尺寸变化（包括从 display:none 变可见）时自动触发
+  // 的，都会在 resize 完成后重新判一次。'把图表所在的隐藏标签页切到可见'
+  // 这类场景因此大多不需要调用方知道 _fitToolbarLegend 这个内部方法的
+  // 存在——已实测验证：用真实的 `--headless=new`（而不是冻结渲染循环的
+  // `--virtual-time-budget` 模式）加载 demo 页、只点标签页切换、不手动调
+  // 任何 resize()，三项图例的堆叠柱状图图例依然正确避开了工具条，说明
+  // ResizeObserver 确实会调用到这层包装。真正还需要手动补调 resize() 的，
+  // 只剩下本仓库这一种本身就不支持 ResizeObserver 依赖的
+  // requestAnimationFrame 的特殊测试环境（headless chromium 的
+  // `--virtual-time-budget` 模式）——这是这类环境本来就有的已知限制（和
+  // 全屏按钮 Bug 2 修复时踩的是同一个坑），不是这次改动新引入的，`demo.js`
+  // 的 selftest 套件已经对这几张图表手动补了 resize()，可以直接参考。
+  //
+  // 包装只拦 resize，不拦 update：_fitToolbarLegend() 自己需要调整时只调
+  // chart.update()，不会递归触发这层包装，不用担心死循环。
+  //
+  // 这里还踩过一个坑：曾经试过不包一层 resize，而是用 Chart.js 插件的
+  // `afterLayout` 钩子全局接管、每次布局都自动重判——实测发现这条路不稳：
+  // `new Chart()` 构造过程内部会先触发至少一次 `afterLayout`（这时
+  // `legendHitBoxes` 还没来得及在这一轮里稳定，量到的是过渡态），而且一旦
+  // 留白生效，图例会被推到工具条纵向范围以下，下一次自动重判会看到"现在
+  // 不重叠了"而把刚加上的留白原地撤销，形成"加上留白 → 查出来不重叠 →
+  // 撤销留白 → 又重叠"的判定来回（实测这条链路在一次 create() 里就能来回
+  // 两轮，没有扩散成死循环只是因为"期望值等于当前值就不动"的幂等保护在
+  // 第二轮之后刚好停在了一个巧合的状态，不能指望这个巧合）。判断本身要做
+  // 归一化处理（见 legendOverlapsToolbar 的 appliedPaddingTop 参数）才能
+  // 根治这个问题，但触发时机仍然改成只挂 resize——每次布局都重判的频率
+  // 对这个场景来说是过度的，resize 已经覆盖了所有真正会让图例/工具条相对
+  // 位置变化的时刻。
+  //
+  // 调用方自己配置过 `layout.padding.top` 的话优先尊重，不被这套逻辑碰——
+  // 用独立的 `__dsAutoPaddingTop` 标志区分"这是我们自动写的"还是"调用方自己
+  // 写的"，和 `__dsAutoBg`/`__dsAutoBorder` 是同一个模式。
   var TOOLBAR_TOP_RESERVE = 30;
+
+  // 低于这个宿主高度（单位 px）直接跳过留白判断——compact 规格（90px）就是
+  // 要豁免的典型：这么矮的宿主里，图例和工具条本来就不可能同时有伸展空间
+  // 让两者真的撞上，谈"按需留白"没有意义，徒增判断成本还可能在极端布局下
+  // 把本就紧张的高度压得更紧。150 在 90（compact）和 260（常规）之间留了
+  // 余量，不贴着 compact 的具体数值写。
+  var LEGEND_TOOLBAR_MIN_HOST_HEIGHT = 150;
+
+  // 判断图例是否真的被工具条遮住：取图例的逐项命中框（legendHitBoxes）和
+  // 工具条 DOM 的真实包围盒，换算到同一个"相对 canvas 左上角"的坐标系里做
+  // 矩形相交判断。不用固定估值（工具条宽度随滚轮模式提示文案变化，最长是
+  // "滚轮缩放，到底翻页"），也不只比较"图例顶边 vs 工具条底边"这种整体粗
+  // 判断——那样会漏掉"图例没换行、但前几项离左边很近，工具条只压住最后
+  // 一项的一部分"这类局部重叠。
+  //
+  // appliedPaddingTop 是"这张图当前已经由我们自己注入的 layout.padding.top"
+  // （没注入过就是 0）。判断前先把每个命中框的纵坐标减去这个值，换算回
+  // "假设没加过这段留白"的基准线上再比——不能直接用命中框的当前坐标判断：
+  // 留白一旦生效，图例会被整体推低到工具条纵向范围以下，这时候如果不做这
+  // 个还原，会读到"现在不重叠了"，反而把刚加上的留白当成不需要而撤销掉，
+  // 形成"加留白→查出不重叠→撤销→又重叠"的判定来回（实测复现过，见
+  // TOOLBAR_TOP_RESERVE 定义处的说明）。
+  function legendOverlapsToolbar(chart, host, appliedPaddingTop) {
+    var legend = chart.legend;
+    if (!legend || !legend.options || legend.options.display === false) return false;
+    if ((legend.options.position || 'top') !== 'top') return false;
+    var hitBoxes = legend.legendHitBoxes;
+    if (!hitBoxes || !hitBoxes.length) return false;
+    var toolbarEl = host.querySelector('.ds-chart-toolbar');
+    if (!toolbarEl) return false;
+    var canvasRect = chart.canvas.getBoundingClientRect();
+    // 画布 0 尺寸（典型：宿主正处于 `hidden` 标签页里，display:none 的
+    // 祖先把整条子树的布局盒都收缩成 0）时，getBoundingClientRect() 全是
+    // 0，没有真实几何可比——判"不重叠"更安全，等调用方让宿主真正可见、
+    // 触发一次 resize()/update() 并重新调用 _fitToolbarLegend() 之后会用
+    // 真实尺寸重新判一次（见 TOOLBAR_TOP_RESERVE 定义处的说明）。
+    if (canvasRect.width === 0 || canvasRect.height === 0) return false;
+    var toolbarRect = toolbarEl.getBoundingClientRect();
+    var tLeft = toolbarRect.left - canvasRect.left;
+    var tRight = toolbarRect.right - canvasRect.left;
+    var tTop = toolbarRect.top - canvasRect.top;
+    var tBottom = toolbarRect.bottom - canvasRect.top;
+    return hitBoxes.some(function (hb) {
+      var hLeft = hb.left;
+      var hRight = hb.left + hb.width;
+      var hTop = hb.top - appliedPaddingTop;
+      var hBottom = hTop + hb.height;
+      return hLeft < tRight && hRight > tLeft && hTop < tBottom && hBottom > tTop;
+    });
+  }
 
   // entry.chart.canvas 在 chart.destroy() 后会被 Chart.js 置为 null，
   // 用它判断实例是否还活着；registry 里 destroy 之后的死实例要物理摘除，
@@ -875,6 +975,33 @@ window.DS = window.DS || {};
         }
 
         DS.charts._mountToolbar(chart);
+
+        // 把 chart.resize 包一层：不管是谁触发的 resize()——本库自己全屏
+        // 按钮里那次、调用方自己手动调的那次，还是 Chart.js 内置
+        // ResizeObserver 在容器尺寸变化（包括从 display:none 变可见）时
+        // 自动调用的那次——resize 完成后都顺便重新判一次要不要给工具条
+        // 让出顶部空间。这样"把图表所在的隐藏标签页切到可见"这类场景，
+        // 只要 Chart.js 自己的响应式机制正常工作（它靠 ResizeObserver，
+        // 这个仓库唯一不支持这条路径的环境是本机 headless chromium 的
+        // `--virtual-time-budget` 模式——它连 ResizeObserver 依赖的
+        // requestAnimationFrame 都不触发，所以这类环境下仍然需要调用方
+        // 手动调一次 chart.resize()，demo.js 的 selftest 套件已经这样
+        // 做），都不需要调用方知道 _fitToolbarLegend 这个内部方法的存在。
+        // 只包 resize，不包 update：_fitToolbarLegend 自己需要时只调
+        // chart.update()，不会递归触发这层包装，不会死循环。
+        var origResize = chart.resize.bind(chart);
+        chart.resize = function () {
+          origResize.apply(chart, arguments);
+          DS.charts._fitToolbarLegend(chart);
+        };
+
+        // 工具条 DOM 刚挂上，图例也已经被 new Chart() 真实布局过——两边的
+        // 几何坐标现在都是真的，判断"要不要给工具条让出顶部空间"就放在
+        // 这里，补上"从创建到第一次 resize() 之间"这段空档。必须排在
+        // _mountToolbar() 之后：量重叠靠的就是刚挂上的工具条元素的
+        // getBoundingClientRect()，顺序反了的话工具条还不存在，查不到任何
+        // 重叠（Review 裁决 (c)）。
+        DS.charts._fitToolbarLegend(chart);
       }
 
       // 记录的是传进来的原始 config 对象，而不是 chart.options。两者都可读可
@@ -915,12 +1042,11 @@ window.DS = window.DS || {};
       // pie/doughnut/polarArea/radar 没有 x/y 轴，硬塞 scales.x/scales.y 会在
       // 弧形图上画出幽灵坐标轴、把 chartArea 挤歪。只有真正的笛卡尔系图表才注入。
       if (isCartesian(config.type)) {
-        // 见 TOOLBAR_TOP_RESERVE 定义处的注释：给工具条让出顶部空间，避免
-        // 压住多数据集图表的图例。只在调用方没有自己配置
-        // layout.padding.top 时才补这个默认值。
-        o.layout = o.layout || {};
-        o.layout.padding = o.layout.padding || {};
-        if (o.layout.padding.top == null) o.layout.padding.top = TOOLBAR_TOP_RESERVE;
+        // 工具条顶部留白不在这里（paint()）处理：是否需要给图例让出空间，
+        // 要等 new Chart() 真正布局过、工具条 DOM 也挂上之后才量得出来，
+        // paint() 这时候两者都还不存在。见 create() 里的
+        // DS.charts._fitToolbarLegend() 调用和 TOOLBAR_TOP_RESERVE 定义处
+        // 的详细说明。
 
         // crosshair：Chart.js 内置的 index 模式足够——鼠标不必精确落在数据点
         // 上（intersect:false）就能联动高亮同一索引下的所有系列，不需要额外
@@ -1331,6 +1457,52 @@ window.DS = window.DS || {};
       DS.charts.zoom(chart, zoomIn ? 1.25 : 0.8);
     },
 
+    /* 按需给工具条留出顶部空间：见 TOOLBAR_TOP_RESERVE 定义处的完整说明。
+       调用时机——create() 里 _mountToolbar() 之后手动调一次（见 create()），
+       以及全屏按钮的 chart.resize() 之后再调一次（见下面 _mountToolbar()
+       的 'full' 分支）。调用方自己在这两处之外对图表做了 resize()/update()
+       的话，也应该照这个样子自己补调一次——这是本方案明确记录在案的限制，
+       详见 TOOLBAR_TOP_RESERVE 定义处的说明。 */
+    _fitToolbarLegend: function (chart) {
+      if (!chart || !chart.canvas || !isCartesian(chart.config.type)) return;
+      var host = chart.canvas.parentNode;
+      if (!host) return;
+
+      // 必须用 chart.config.options（调用方传入、create() 时原样存进
+      // registry 的那份普通对象，retheme()/paint() 一直在读写的也是它），
+      // 不能用 chart.options——后者是 Chart.js 的 resolver Proxy，对它做
+      // `o.layout = o.layout || {}` 这种自赋值会在 Proxy 内部触发自引用
+      // （实测：直接抛 RangeError: Maximum call stack size exceeded），
+      // 和文件顶部"修改 chart.options 的正确姿势"那条踩的是同一个坑。
+      var o = chart.config.options;
+      var layout = o.layout;
+      var autoSet = !!(layout && layout.__dsAutoPaddingTop);
+      // 调用方自己配置过 layout.padding.top（不是我们自己写的那次）：永远
+      // 尊重，不管后续任何 resize/update 都不碰。
+      if (layout && layout.padding && layout.padding.top != null && !autoSet) return;
+
+      // 到这里为止，当前的 layout.padding.top（没有就是 0）只可能是我们
+      // 自己上一次写的，不会是调用方的——上面那行已经把调用方自己配置的
+      // 情形短路掉了。
+      var currentTop = (layout && layout.padding && layout.padding.top) || 0;
+
+      var needed = false;
+      // compact 这类矮宿主直接豁免，连重叠判断都不做——见
+      // LEGEND_TOOLBAR_MIN_HOST_HEIGHT 定义处的说明。
+      if (host.clientHeight >= LEGEND_TOOLBAR_MIN_HOST_HEIGHT) {
+        needed = legendOverlapsToolbar(chart, host, currentTop);
+      }
+
+      var desired = needed ? TOOLBAR_TOP_RESERVE : 0;
+      if (currentTop === desired) return;  // 没变化：不触碰配置，也不触发 update()
+
+      o.layout = o.layout || {};
+      o.layout.padding = o.layout.padding || {};
+      o.layout.padding.top = desired;
+      o.layout.__dsAutoPaddingTop = true;
+      chart.update('none');
+    },
+
     _mountToolbar: function (chart) {
       var host = chart.canvas.parentNode;
       var bar = document.createElement('div');
@@ -1375,6 +1547,11 @@ window.DS = window.DS || {};
           // 如果未来改动（比如给 .ds-chart-fullscreen 加 CSS transition）
           // 导致同步测量不再可靠，这里要改的是等一拍再 resize()——用
           // setTimeout，不要用 rAF（仓库硬约束，见文件顶部注释）。
+          // chart.resize 在 create() 里已经被包了一层（见上面的说明），
+          // 这次调用完成后会自动重新判一次要不要给工具条让出顶部空间——
+          // 全屏放大之后宿主变得又高又宽，原本不需要留白的图表可能现在
+          // 需要，退出全屏也可能从"需要"变回"不需要"，不需要在这里单独
+          // 再调一次（Review 裁决 (b)）。
           chart.resize();
         }
       });
@@ -2673,6 +2850,11 @@ window.DS_MOCK = (function () {
     // 中间状态遗留给后面的 wheel 套件（它要用 barChart 做真实鼠标坐标测试）。
     document.querySelector('[data-panel="p-comp"]').click();
     [longChart, hbarChart, pieChart, scatterChart].forEach(function (c) {
+      // c.resize() 顺带会重新判一次要不要给工具条让出顶部空间（charts.js
+      // create() 里包了一层 chart.resize()，见 TOOLBAR_TOP_RESERVE 定义处
+      // 的说明）——这些图表创建时宿主还是隐藏的（clientHeight=0，当时直接
+      // 判"不需要"），这次 resize() 第一次给它们真实尺寸，同一次调用里就
+      // 补上了，不需要额外再调。
       if (c) { c.resize(); c.update('none'); }
     });
 
@@ -3384,6 +3566,10 @@ window.DS_MOCK = (function () {
   window.DS_SELFTEST_SUITES.push(function reportCharts(A) {
     document.querySelector('[data-panel="p-comp"]').click();
     [comboChart, stackedChart, areaChart, timeaxisChart].forEach(function (c) {
+      // 同上一个套件：c.resize() 顺带重新判一次要不要给工具条让出顶部
+      // 空间。stackedChart 的三项图例正是"按需留白"这条规则要保护的真实
+      // 场景——创建时宿主隐藏判定过"不需要"，这次 resize() 第一次给它真实
+      // 尺寸，同一次调用里就补上了。
       if (c) { c.resize(); c.update('none'); }
     });
 
@@ -3571,17 +3757,37 @@ window.DS_MOCK = (function () {
     // 线上可见的破损（复审实测）：三项图例的这张堆叠柱，图例第三项"设备C"
     // 曾经被 .ds-chart-toolbar（position:absolute，悬浮在宿主右上角）整个
     // 压住，深浅主题都复现——单项图例的既有图表从没暴露过这个问题。真正
-    // 验证"不再被压住"要用两边的真实几何位置比较，不是回读配置回声：工具条
-    // 在 DOM 里的 getBoundingClientRect() 相对画布顶部的下边缘，必须不晚于
-    // Chart.js 布局引擎真实算出来的图例顶边（chart.legend.top，Chart.js 的
-    // 布局阶段算完之后才有这个值，不是我们自己拍的数字）。
+    // 验证"不再被压住"要用两边的真实几何位置比较，不是回读配置回声。
+    //
+    // 这里不能再用"legend.top 必须不早于工具条下边缘"这种整体粗判断——
+    // "按需留白"改版之后，图表是否需要让出顶部空间取决于图例的逐项命中框
+    // 是否真的会落进工具条的横向范围，跟当前这块画布具体多宽有关（charts.js
+    // 里 legendOverlapsToolbar() 的同一份判断）；画布足够宽时legend 两者
+    // 水平方向根本不会碰到，legend.top 留在 Chart.js 默认值（没有额外留白）
+    // 也完全正确，用旧的粗判断反而会把"根本不需要留白、也确实没被压住"的
+    // 正常状态误判成"失败"。改成跟库内部同一套逐项命中框 vs 工具条包围盒
+    // 的矩形相交判断，不管这张图在当前视口宽度下最终有没有被补上留白，只
+    // 要图例的任何一项命中框都不落进工具条范围，就是真正"不被遮挡"。
     var stackedToolbarEl = stackedChart.canvas.parentNode.querySelector('.ds-chart-toolbar');
     var stackedToolbarRect = stackedToolbarEl.getBoundingClientRect();
     var stackedCanvasRect = stackedChart.canvas.getBoundingClientRect();
-    var stackedToolbarBottomRelToCanvas = stackedToolbarRect.bottom - stackedCanvasRect.top;
+    var stackedToolbarRel = {
+      left: stackedToolbarRect.left - stackedCanvasRect.left,
+      right: stackedToolbarRect.right - stackedCanvasRect.left,
+      top: stackedToolbarRect.top - stackedCanvasRect.top,
+      bottom: stackedToolbarRect.bottom - stackedCanvasRect.top
+    };
+    var stackedOverlappingHitbox = (stackedChart.legend.legendHitBoxes || []).find(function (hb) {
+      var hLeft = hb.left, hRight = hb.left + hb.width, hTop = hb.top, hBottom = hb.top + hb.height;
+      return hLeft < stackedToolbarRel.right && hRight > stackedToolbarRel.left &&
+        hTop < stackedToolbarRel.bottom && hBottom > stackedToolbarRel.top;
+    });
     A.check('ch-stacked-legend-not-covered-by-toolbar',
-      stackedChart.legend.top >= stackedToolbarBottomRelToCanvas,
-      'legend.top=' + stackedChart.legend.top + ' toolbarBottom=' + stackedToolbarBottomRelToCanvas);
+      !stackedOverlappingHitbox,
+      'overlapping hitbox=' + JSON.stringify(stackedOverlappingHitbox) +
+        ' toolbarRel=' + JSON.stringify(stackedToolbarRel) +
+        ' paddingTop=' + (stackedChart.options.layout && stackedChart.options.layout.padding &&
+          stackedChart.options.layout.padding.top));
 
     // 真正验证"堆叠"本身：最上面一段柱子的顶部像素，应该落在"三段累加值"
     // 对应的像素位置，而不是它自己的值单独从 0 起算的位置——这是
@@ -3638,6 +3844,158 @@ window.DS_MOCK = (function () {
     });
     A.check('ch-stacked-percent-toggle-off-restores-raw', restoredOk,
       stackedChart.data.datasets.map(function (d) { return d.data.join('/'); }).join(' | '));
+
+    // ---------------- 按需留白（修 bug 引入的新隐患）----------------
+    // 复审发现：paint() 此前无条件给所有笛卡尔图注入 layout.padding.top=30
+    // 来避让工具条，代价是单项图例的普通图表平白损失一截绘图区，
+    // .ds-chart-host--compact（90px）配真实数据时绘图区被压到仅剩 1.6px，
+    // 事实上不可用——compact 的唯一既有用例（c-empty）走的是空数据早退
+    // 分支，paint() 根本没跑到，没暴露。这里用三个不依赖响应式网格实际宽度
+    // （不想被视口大小摆布）的独立 scratch 图表直接验证新行为。
+
+    // 1) 单项图例的普通图表：不应该被加留白。
+    (function () {
+      var host = document.createElement('div');
+      host.className = 'ds-chart-host';
+      var canvas = document.createElement('canvas');
+      host.appendChild(canvas);
+      document.body.appendChild(host);
+      var chart = DS.charts.create(canvas, {
+        type: 'line',
+        data: { labels: ['a', 'b', 'c'], datasets: [{ label: 'v', data: [1, 2, 3] }] }
+      });
+      var paddingTop = (chart.options.layout && chart.options.layout.padding &&
+        chart.options.layout.padding.top) || 0;
+      A.check('ch-toolbar-pad-single-legend-no-padding', paddingTop === 0,
+        'got paddingTop=' + paddingTop);
+      DS.charts.destroy(chart);
+      host.remove();
+    })();
+
+    // 2) compact 容器（90px）配真实数据：不应该被加留白，绘图区必须可用——
+    // 这正是本次要修的那个具体破损（复现条件：三项图例 + 90px 矮宿主）。
+    // 宽度刻意收窄到 450px（跟下面第 3 个用例同一个已验证会触发真实重叠的
+    // 宽度）：如果只用默认宽度，图例横向伸不到工具条所在的列，不管
+    // LEGEND_TOOLBAR_MIN_HOST_HEIGHT 这条矮宿主豁免有没有生效，重叠判断
+    // 本身都会算出"不重叠"，测不出矮宿主豁免这条规则是否真的在工作
+    // （变异验证过：只删掉高度豁免、留着重叠判断，默认宽度下这条断言测
+    // 不出区别）。收窄宽度后，不豁免的话重叠判断会判真，断言才有鉴别力。
+    (function () {
+      var host = document.createElement('div');
+      host.className = 'ds-chart-host ds-chart-host--compact';
+      host.style.width = '450px';
+      var canvas = document.createElement('canvas');
+      host.appendChild(canvas);
+      document.body.appendChild(host);
+      var chart = DS.charts.create(canvas, {
+        type: 'bar',
+        data: {
+          labels: stackedLabels,
+          datasets: stackedRaw.map(function (d) { return { label: d.label, data: d.data.slice() }; })
+        },
+        options: { scales: { x: { stacked: true }, y: { stacked: true } } }
+      });
+      var paddingTop = (chart.options.layout && chart.options.layout.padding &&
+        chart.options.layout.padding.top) || 0;
+      var chartAreaHeight = chart.chartArea.bottom - chart.chartArea.top;
+      A.check('ch-toolbar-pad-compact-no-padding', paddingTop === 0,
+        'got paddingTop=' + paddingTop);
+      // 90px 宿主，之前无条件 +30px 会把绘图区压到 1.6px（实测复现过，
+      // 90 - 图例一行 - x 轴刻度一行 - 30px 留白 几乎吃光）；这里只要求
+      // 绘图区明显超过那个坏值（实测修复后约 29.6px），用 20px 做下限——
+      // 比"1.6px"远得多、足以抓住"又无条件注入了 30px 留白"这类回归，也
+      // 给 Chart.js 版本升级后图例/刻度几像素的正常波动留了余量。
+      A.check('ch-toolbar-pad-compact-chart-area-usable', chartAreaHeight >= 20,
+        'got chartAreaHeight=' + chartAreaHeight + ' (host 90px)');
+      DS.charts.destroy(chart);
+      host.remove();
+    })();
+
+    // 3) 三项图例的堆叠柱：在足够窄的宿主下（复现条件——c-stacked 本身在
+    // 当前视口宽度下不一定窄到会撞上工具条，不能拿它单独验证"修复确实生
+    // 效"，必须用固定宽度排除视口影响），工具条必须被正确避让，图例每一
+    // 项命中框都不能落进工具条的矩形范围。
+    (function () {
+      var host = document.createElement('div');
+      host.className = 'ds-chart-host';
+      host.style.width = '450px';
+      var canvas = document.createElement('canvas');
+      host.appendChild(canvas);
+      document.body.appendChild(host);
+      var chart = DS.charts.create(canvas, {
+        type: 'bar',
+        data: {
+          labels: stackedLabels,
+          datasets: stackedRaw.map(function (d) { return { label: d.label, data: d.data.slice() }; })
+        },
+        options: { scales: { x: { stacked: true }, y: { stacked: true } } }
+      });
+      var toolbarEl = chart.canvas.parentNode.querySelector('.ds-chart-toolbar');
+      var toolbarRect = toolbarEl.getBoundingClientRect();
+      var canvasRect = chart.canvas.getBoundingClientRect();
+      var toolbarRel = {
+        left: toolbarRect.left - canvasRect.left, right: toolbarRect.right - canvasRect.left,
+        top: toolbarRect.top - canvasRect.top, bottom: toolbarRect.bottom - canvasRect.top
+      };
+      var overlapping = (chart.legend.legendHitBoxes || []).find(function (hb) {
+        var hLeft = hb.left, hRight = hb.left + hb.width, hTop = hb.top, hBottom = hb.top + hb.height;
+        return hLeft < toolbarRel.right && hRight > toolbarRel.left &&
+          hTop < toolbarRel.bottom && hBottom > toolbarRel.top;
+      });
+      A.check('ch-toolbar-pad-narrow-stacked-legend-protected', !overlapping,
+        'overlapping=' + JSON.stringify(overlapping) + ' toolbarRel=' + JSON.stringify(toolbarRel) +
+          ' paddingTop=' + (chart.options.layout && chart.options.layout.padding &&
+            chart.options.layout.padding.top));
+      DS.charts.destroy(chart);
+      host.remove();
+    })();
+
+    // 4) 创建时宿主隐藏（clientHeight=0，create() 当时直接判"不需要"留白），
+    // 之后变可见并调用原生 chart.resize()——不手动调用
+    // DS.charts._fitToolbarLegend()——留白判断应该照样自动补上。这验证的
+    // 是 create() 里给 chart.resize 包的那层：不管是调用方自己调
+    // resize()，还是 Chart.js 内置 ResizeObserver 自动调用，都应该经过
+    // 同一层包装重新判一次（demo 页里"组件全览"标签页下那几张图表能在
+    // 真实浏览器里不被压住，靠的就是这层包装，不是手动调用）。
+    (function () {
+      var hiddenWrap = document.createElement('div');
+      hiddenWrap.style.display = 'none';
+      document.body.appendChild(hiddenWrap);
+      var host = document.createElement('div');
+      host.className = 'ds-chart-host';
+      host.style.width = '450px';
+      var canvas = document.createElement('canvas');
+      host.appendChild(canvas);
+      hiddenWrap.appendChild(host);
+      var chart = DS.charts.create(canvas, {
+        type: 'bar',
+        data: {
+          labels: stackedLabels,
+          datasets: stackedRaw.map(function (d) { return { label: d.label, data: d.data.slice() }; })
+        },
+        options: { scales: { x: { stacked: true }, y: { stacked: true } } }
+      });
+      var paddingWhileHidden = (chart.options.layout && chart.options.layout.padding &&
+        chart.options.layout.padding.top) || 0;
+      hiddenWrap.style.display = '';
+      chart.resize(); // 不手动调 DS.charts._fitToolbarLegend()
+      var toolbarEl = chart.canvas.parentNode.querySelector('.ds-chart-toolbar');
+      var toolbarRect = toolbarEl.getBoundingClientRect();
+      var canvasRect = chart.canvas.getBoundingClientRect();
+      var toolbarRel = {
+        left: toolbarRect.left - canvasRect.left, right: toolbarRect.right - canvasRect.left,
+        top: toolbarRect.top - canvasRect.top, bottom: toolbarRect.bottom - canvasRect.top
+      };
+      var overlappingAfterReveal = (chart.legend.legendHitBoxes || []).find(function (hb) {
+        var hLeft = hb.left, hRight = hb.left + hb.width, hTop = hb.top, hBottom = hb.top + hb.height;
+        return hLeft < toolbarRel.right && hRight > toolbarRel.left &&
+          hTop < toolbarRel.bottom && hBottom > toolbarRel.top;
+      });
+      A.check('ch-toolbar-pad-resize-wrapper-auto-refits', paddingWhileHidden === 0 && !overlappingAfterReveal,
+        'paddingWhileHidden=' + paddingWhileHidden + ' overlappingAfterReveal=' + JSON.stringify(overlappingAfterReveal));
+      DS.charts.destroy(chart);
+      hiddenWrap.remove();
+    })();
 
     // ---------------- 面积图 ----------------
     A.check('ch-area-created', areaChart !== null, '');
