@@ -42,6 +42,27 @@ window.DS = window.DS || {};
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
 
+  // 面积图（line + fill）的填充色需要是线条色的半透明版本，否则多条面积图
+  // 叠在一起会互相完全遮挡（纯色块看不出谁在上谁在下）。tokens.css 里的
+  // 颜色都是 6 位十六进制，这里只转换运行时从 CSS 变量读出来的值，不在源码
+  // 里写任何颜色字面量。alpha 固定给 0.28——离线算过 WCAG 相对亮度对比度
+  // （跟 demo.js selftest 用的是同一套公式）：六条分类序列色分别叠在浅色
+  // surface（#ffffff）和深色 surface（#18181b）上，0.22 在深色主题下部分
+  // 颜色的合成对比度会跌到 1.2 这条此前热力图最低档也用过的可见性下限
+  // 边缘；0.28 能让全部六条序列色在两套主题下都明显高于这条线，同时仍然
+  // 足够透明——两条面积图叠在一起不会完全互相遮挡。
+  var AREA_FILL_ALPHA = 0.28;
+  function hexToRgba(hex, alpha) {
+    hex = String(hex).replace('#', '');
+    if (hex.length === 3) {
+      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    }
+    var r = parseInt(hex.substr(0, 2), 16);
+    var g = parseInt(hex.substr(2, 2), 16);
+    var b = parseInt(hex.substr(4, 2), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+  }
+
   // entry.chart.canvas 在 chart.destroy() 后会被 Chart.js 置为 null，
   // 用它判断实例是否还活着；registry 里 destroy 之后的死实例要物理摘除，
   // 否则 entry 会一直强引用 Chart 实例 + 原始 config（连带整份 dataset）不释放。
@@ -75,6 +96,30 @@ window.DS = window.DS || {};
         text: cssVar('--color-text-secondary'),
         series: ['--chart-s1', '--chart-s2', '--chart-s3',
                  '--chart-s4', '--chart-s5', '--chart-s6'].map(cssVar)
+      };
+    },
+
+    /* 时间轴退而求其次的方案：内联的 src/vendor/chart.umd.js 是裸 Chart.js
+       4.4.0，没有带 chartjs-adapter-date-fns 之类的日期适配器（Chart.js 的
+       'time'/'timeseries' 轴类型本身依赖它才能解析/格式化时间），本仓库零
+       外链、不联网下载第三方库，所以不内联适配器。这里退回到 'linear' 数值
+       轴 + 自定义 ticks.callback，把时间戳（毫秒）格式化成日期标签，达到
+       视觉等效——不是真正的 time scale（没有"按天/按周自动选刻度密度"这类
+       能力，刻度密度仍由 Chart.js 对线性轴的默认算法决定），细节见 README
+       「时间轴」一节。
+       全部用 UTC 方法（getUTCMonth/getUTCDate/...）而不是本地时区的
+       getMonth/getDate：渲染断言要在任何时区的机器上都算出同一个字符串，
+       调用方用 Date.UTC() 生成时间戳时两边口径一致。 */
+    dateTicks: function (fmt) {
+      fmt = fmt || 'md';
+      function pad2(n) { return n < 10 ? '0' + n : String(n); }
+      return function (value) {
+        var d = new Date(value);
+        if (isNaN(d.getTime())) return String(value);
+        if (fmt === 'ymd') {
+          return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+        }
+        return (d.getUTCMonth() + 1) + '/' + d.getUTCDate();
       };
     },
 
@@ -246,12 +291,30 @@ window.DS = window.DS || {};
           var s = o.scales[axis];
           s.grid = s.grid || {};
           s.grid.color = c.grid;
+          // 额外坐标轴（axisNames 里 'x'/'y' 以外的，典型是双轴组合图的
+          // y1）默认不画网格线：两套网格线叠在一起对报表读者是纯噪音，
+          // 惯例上只让主轴画网格、副轴只留刻度和轴线。只在调用方没有显式
+          // 配置过 grid.drawOnChartArea 时才补这个默认值——调用方自己
+          // 写了 true/false 就不覆盖（跟下面 interaction/tooltip.mode 的
+          // "没传才补"是同一个原则）。'x'/'y' 这两根主轴永远保留 Chart.js
+          // 自己的默认值（true），不在这条默认规则里。
+          if (axis !== 'x' && axis !== 'y' && s.grid.drawOnChartArea == null) {
+            s.grid.drawOnChartArea = false;
+          }
           s.border = s.border || {};
           s.border.color = c.axis;
           s.ticks = s.ticks || {};
           s.ticks.color = c.text;
-          if (axis === categoryAxis) {
-            // 超长中文标签截断，避免撑破布局；全称交给 Chart.js 默认 tooltip。
+          // 只在调用方没有自己提供 ticks.callback 时才补默认的"超长中文标签
+          // 截断"——此前这里无条件覆盖赋值，调用方想要的任何自定义刻度格式
+          // 化（典型例子：时间轴退化方案用 DS.charts.dateTicks() 把时间戳
+          // 格式化成日期标签）都会在每次 paint()（包括首次 create() 和每次
+          // 主题切换触发的 retheme）被这段默认截断逻辑原地冲掉——类目轴上的
+          // 数值会先被 Chart.js 的 getLabelForValue() 转成完整数字字符串
+          // （比如时间戳 "1,704,067,200,000"），再被当成"超长标签"截断成一串
+          // 看不出意义的 "1,704,0…"，整个时间轴格式化形同虚设。全称交给
+          // Chart.js 默认 tooltip。
+          if (axis === categoryAxis && s.ticks.callback == null) {
             s.ticks.callback = function (value, index) {
               var raw = this.getLabelForValue ? this.getLabelForValue(value) : value;
               raw = String(raw);
@@ -276,7 +339,25 @@ window.DS = window.DS || {};
           if (d.borderColor == null || d.__dsAuto) { d.borderColor = cssVar('--color-surface'); }
         } else {
           var color = c.series[i % c.series.length];
-          if (d.backgroundColor == null || d.__dsAuto) { d.backgroundColor = color; d.__dsAuto = true; }
+          // 面积图（line + fill）：fill 为真值（true / 'origin' / 数字索引 /
+          // 非 'false' 的字符串，即 Chart.js 自己认可的全部 fill 取值）的
+          // 数据集，backgroundColor 要是线条色的半透明版本，不能跟普通折线/
+          // 柱状图一样给不透明色——不透明的话多条面积图叠在一起会变成互相
+          // 完全遮挡的实心色块，看不出谁在上谁在下。borderColor（线条本身、
+          // 图例描边）仍然是不透明的系列色，没有 fill 的数据集（普通折线、
+          // 柱状图）backgroundColor 也仍然是不透明色——这两类此前的行为
+          // 原样保留，只有"这个数据集类型是 line 且确实要填充"这一种情形走
+          // 半透明分支，per-dataset 判断（dataset.type 可以覆盖所属图表的
+          // config.type，混合图里同一个 chart 常见"面积 + 普通折线"共存）。
+          var dsType = d.type || config.type;
+          var isFilledLine = dsType === 'line' &&
+            (d.fill === true || d.fill === 'origin' ||
+             typeof d.fill === 'number' ||
+             (typeof d.fill === 'string' && d.fill !== 'false'));
+          if (d.backgroundColor == null || d.__dsAuto) {
+            d.backgroundColor = isFilledLine ? hexToRgba(color, AREA_FILL_ALPHA) : color;
+            d.__dsAuto = true;
+          }
           if (d.borderColor == null || d.__dsAuto) { d.borderColor = color; }
         }
       });

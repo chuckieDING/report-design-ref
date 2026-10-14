@@ -59,6 +59,33 @@
     return '#' + toHex(r) + toHex(g) + toHex(b);
   }
 
+  // rgba(r,g,b,a) 字符串解析成分量数组：用于校验面积图的半透明填充是否真的
+  // 取自线条色（而不是巧合凑出同一个数）、以及 alpha 是否 < 1。
+  function parseRgba(str) {
+    var m = /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)/.exec(String(str));
+    if (!m) return null;
+    return { r: +m[1], g: +m[2], b: +m[3], a: m[4] == null ? 1 : +m[4] };
+  }
+  function hexToRgbComponents(hex) {
+    hex = String(hex).replace('#', '');
+    return { r: parseInt(hex.substr(0, 2), 16), g: parseInt(hex.substr(2, 2), 16), b: parseInt(hex.substr(4, 2), 16) };
+  }
+  function rgbToHex(r, g, b) {
+    function h(n) { var s = Math.round(n).toString(16); return s.length < 2 ? '0' + s : s; }
+    return '#' + h(r) + h(g) + h(b);
+  }
+
+  // 双轴组合图 y1 的 grid/ticks/border 是否真的被 paint() 注入了当前主题色——
+  // 'charts' 和 'reportCharts' 两套断言套件都要用，提到外层共享，不各写一份。
+  function scaleColors(chart, axis) {
+    var s = (chart.options.scales && chart.options.scales[axis]) || {};
+    return {
+      grid: s.grid && s.grid.color,
+      ticks: s.ticks && s.ticks.color,
+      border: s.border && s.border.color
+    };
+  }
+
   document.getElementById('app').innerHTML = [
     '<div class="ds-nav">',
     '  <span class="ds-nav-title">report-design-ref</span>',
@@ -167,6 +194,34 @@
     '      <div class="ds-chart-host"><canvas id="c-pie"></canvas></div></div>',
     '    <div class="ds-card"><div class="ds-card-title">散点图</div>',
     '      <div class="ds-chart-host"><canvas id="c-scatter"></canvas></div></div>',
+    '  </div>',
+
+    '  <div class="ds-grid ds-grid-2" style="margin-top:14px">',
+    '    <div class="ds-card"><div class="ds-card-title">双轴组合图（量 + 率）</div>',
+    '      <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">',
+    '        柱子是绝对量（批次数，左轴），折线是比率（达标率，右轴）——量纲不同的两个',
+    '        指标共享一张图是报表最常见的形态。副轴（右轴）默认不画网格线，避免两套',
+    '        网格叠在一起成为视觉噪音。</div>',
+    '      <div class="ds-chart-host"><canvas id="c-combo"></canvas></div></div>',
+    '    <div class="ds-card"><div class="ds-card-title">堆叠柱状图</div>',
+    '      <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">',
+    '        多台设备各自贡献的批次数按月堆叠，配色走六条分类序列色。</div>',
+    '      <label style="display:block;font-size:12px;cursor:pointer;margin-bottom:8px">',
+    '        <input type="checkbox" id="chk-stacked-percent"> 显示为百分比堆叠',
+    '        <span style="color:var(--color-text-secondary)">（Chart.js 无原生支持，内部做了一次数据归一化，悬浮仍可看到原始值）</span>',
+    '      </label>',
+    '      <div class="ds-chart-host"><canvas id="c-stacked"></canvas></div></div>',
+    '    <div class="ds-card"><div class="ds-card-title">面积图（填充）</div>',
+    '      <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">',
+    '        fill 数据集的填充色自动取线条色的半透明版本，两条面积图叠在一起也不会',
+    '        互相完全遮挡；不填充的目标线仍是不透明色，画法不受影响。</div>',
+    '      <div class="ds-chart-host"><canvas id="c-area"></canvas></div></div>',
+    '    <div class="ds-card"><div class="ds-card-title">时间轴（按日期，模拟）</div>',
+    '      <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">',
+    '        Chart.js 的 time/timeseries 轴需要额外的日期适配器，本库零外链、不联网',
+    '        下载第三方库，所以这里用数值轴(linear) + 自定义刻度格式化模拟日期轴的',
+    '        视觉效果，细节见 README「时间轴」一节。</div>',
+    '      <div class="ds-chart-host"><canvas id="c-timeaxis"></canvas></div></div>',
     '  </div>',
     '</div></div>'
   ].join('');
@@ -364,6 +419,128 @@
   var scatterChart = makeChart(document.getElementById('c-scatter'), {
     type: 'scatter',
     data: { datasets: [{ label: '样本', data: [{ x: 10, y: 5 }, { x: 30, y: 12 }, { x: 55, y: 7 }] }] }
+  });
+
+  /* ---------- 双轴组合图：柱子是量（批次数，y 轴），折线是率（达标率，
+     y1 轴）。y1 只给 position，grid/ticks/border 故意留白——必须全部由
+     paint() 自己注入，不能是调用方凑巧写对了颜色。y1 的 min/max/百分比
+     ticks 由调用方自己定，paint() 不碰这些。 ---------- */
+  var comboChart = makeChart(document.getElementById('c-combo'), {
+    type: 'bar',
+    data: {
+      labels: months6,
+      datasets: [
+        { label: '批次数', data: DS_MOCK.series(6, 11), yAxisID: 'y' },
+        { label: '达标率', type: 'line', data: DS_MOCK.rates(6, 12), yAxisID: 'y1', tension: 0.3 }
+      ]
+    },
+    options: {
+      scales: {
+        y: { position: 'left' },
+        y1: {
+          position: 'right', min: 0, max: 1,
+          ticks: { callback: function (v) { return Math.round(v * 100) + '%'; } }
+        }
+      }
+    }
+  });
+
+  /* ---------- 堆叠柱状图：三台设备各自的批次数按月堆叠。配色走六条分类
+     序列色。stackedRaw 保留未归一化的原始数据——百分比堆叠开关用它重新
+     算百分比，关闭开关时用它一字不差地还原。 ---------- */
+  var stackedLabels = months6;
+  var stackedRaw = [
+    { label: '设备A', data: DS_MOCK.series(6, 21) },
+    { label: '设备B', data: DS_MOCK.series(6, 22) },
+    { label: '设备C', data: DS_MOCK.series(6, 23) }
+  ];
+  function shallowCopy(o) {
+    var out = {};
+    for (var k in o) { if (Object.prototype.hasOwnProperty.call(o, k)) out[k] = o[k]; }
+    return out;
+  }
+  // percent=true 时：Chart.js 不原生支持"100% 堆叠"，这里用数据预处理
+  // （每一类按当月总量归一化成百分比）模拟出等效效果；tooltip 回调从
+  // dataset.__dsRaw 读回原始绝对值一并展示，不会因为改成百分比就丢信息。
+  function stackedConfig(percent) {
+    var totals = stackedLabels.map(function (_, i) {
+      return stackedRaw.reduce(function (sum, d) { return sum + d.data[i]; }, 0);
+    });
+    var datasets = stackedRaw.map(function (d) {
+      var copy = shallowCopy(d);
+      if (percent) {
+        copy.__dsRaw = d.data.slice();
+        copy.data = d.data.map(function (v, i) { return totals[i] ? +(v / totals[i] * 100).toFixed(1) : 0; });
+      } else {
+        copy.data = d.data.slice();
+      }
+      return copy;
+    });
+    return {
+      type: 'bar',
+      data: { labels: stackedLabels, datasets: datasets },
+      options: {
+        scales: {
+          x: { stacked: true },
+          y: percent
+            ? { stacked: true, min: 0, max: 100, ticks: { callback: function (v) { return v + '%'; } } }
+            : { stacked: true }
+        },
+        plugins: percent ? {
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                var raw = ctx.dataset.__dsRaw ? ctx.dataset.__dsRaw[ctx.dataIndex] : ctx.raw;
+                return ctx.dataset.label + '：' + ctx.formattedValue + '%（原始值 ' + raw + '）';
+              }
+            }
+          }
+        } : {}
+      }
+    };
+  }
+  var stackedChart = makeChart(document.getElementById('c-stacked'), stackedConfig(false));
+  document.getElementById('chk-stacked-percent').addEventListener('change', function (ev) {
+    var chart = DS.charts.create(document.getElementById('c-stacked'), stackedConfig(ev.target.checked));
+    if (chart) stackedChart = chart;
+  });
+
+  /* ---------- 面积图：两条面积（本周/上周处理量）叠加 + 一条不填充的目标线。
+     fill:true 的两个数据集要靠 paint() 把 backgroundColor 换成半透明版本，
+     叠在一起才不会互相完全遮挡；目标线没有 fill 字段，backgroundColor 该
+     保持不透明（跟普通折线图行为一致）。 ---------- */
+  var weekdays = DS_MOCK.weekdays();
+  var areaChart = makeChart(document.getElementById('c-area'), {
+    type: 'line',
+    data: {
+      labels: weekdays,
+      datasets: [
+        { label: '本周处理量', data: DS_MOCK.series(7, 41), fill: true, tension: 0.3 },
+        { label: '上周处理量', data: DS_MOCK.series(7, 42), fill: true, tension: 0.3 },
+        { label: '目标线', data: DS_MOCK.series(7, 43), tension: 0, borderDash: [4, 4] }
+      ]
+    }
+  });
+
+  /* ---------- 时间轴（模拟）：没有内置日期适配器（见 README「时间轴」），
+     x 轴用 'linear' + DS.charts.dateTicks('md') 把时间戳格式化成 M/D 标签。
+     没有 labels 数组（点数据 {x,y}），跟散点图走同一条"按数据域缩放"路径。 ---------- */
+  var timeaxisDates = DS_MOCK.dates(14);
+  var timeaxisValues = DS_MOCK.series(14, 51);
+  var timeaxisChart = makeChart(document.getElementById('c-timeaxis'), {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: '每日批次数',
+        data: timeaxisDates.map(function (t, i) { return { x: t, y: timeaxisValues[i] }; }),
+        tension: 0.3
+      }]
+    },
+    options: {
+      scales: {
+        x: { type: 'linear', ticks: { callback: DS.charts.dateTicks('md') } }
+      }
+    }
   });
 
   /* ---------- SVG 甘特 / 热力：Chart.js 画不了，复用同一套 token ---------- */
@@ -810,14 +987,8 @@
     // { position: 'right' }，grid/ticks/border 全部留白，这里直接读取
     // "paint() 跑完之后" y1 到底被写了什么——留白是故意的，确保能分辨
     // "完全没注入"（y1.grid 不存在）和"注入了但凑巧撞对颜色"两种情况。
-    function scaleColors(chart, axis) {
-      var s = (chart.options.scales && chart.options.scales[axis]) || {};
-      return {
-        grid: s.grid && s.grid.color,
-        ticks: s.ticks && s.ticks.color,
-        border: s.border && s.border.color
-      };
-    }
+    // scaleColors() 定义在外层（IIFE 顶部），'reportCharts' 套件的
+    // ch-combo-* 断言复用同一份实现。
     var themeNow = DS.charts.themeColors();
     var y1Colors = scaleColors(dualAxisChart, 'y1');
     A.check('ch-dualaxis-y1-colors-injected',
@@ -1448,5 +1619,221 @@
       (themeOverride !== 'dark' && themeOverride !== 'light') ||
         themeOverrideStorageSnapshot !== themeOverride,
       'override=' + themeOverride + ' storageAtLoad=' + themeOverrideStorageSnapshot);
+  });
+
+  /* ---------- 补四种报表主力图表：双轴组合图 / 堆叠柱状图 / 面积图 /
+     时间轴（模拟）。实例活在"组件全览"（p-comp），默认 hidden，跟
+     longChart/hbarChart 等同病相怜——读 ticks/像素坐标前必须先切到 p-comp
+     并 resize()，否则零尺寸画布量不出真实刻度。 ---------- */
+  window.DS_SELFTEST_SUITES.push(function reportCharts(A) {
+    document.querySelector('[data-panel="p-comp"]').click();
+    [comboChart, stackedChart, areaChart, timeaxisChart].forEach(function (c) {
+      if (c) { c.resize(); c.update('none'); }
+    });
+
+    // ---------------- 双轴组合图 ----------------
+    A.check('ch-combo-created', comboChart !== null, '');
+
+    var themeNowCombo = DS.charts.themeColors();
+    var y1ColorsCombo = scaleColors(comboChart, 'y1');
+    A.check('ch-combo-y1-colors-injected',
+      y1ColorsCombo.grid === themeNowCombo.grid && y1ColorsCombo.ticks === themeNowCombo.text &&
+        y1ColorsCombo.border === themeNowCombo.axis,
+      'got ' + JSON.stringify(y1ColorsCombo) + ' want ' + JSON.stringify(themeNowCombo));
+
+    DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+    var y1ColorsComboAfter = scaleColors(comboChart, 'y1');
+    var themeAfterCombo = DS.charts.themeColors();
+    A.check('ch-combo-y1-colors-track-theme',
+      y1ColorsComboAfter.grid === themeAfterCombo.grid && y1ColorsComboAfter.grid !== y1ColorsCombo.grid &&
+        y1ColorsComboAfter.ticks === themeAfterCombo.text && y1ColorsComboAfter.border === themeAfterCombo.axis,
+      'before=' + JSON.stringify(y1ColorsCombo) + ' after=' + JSON.stringify(y1ColorsComboAfter));
+    DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+
+    // Bug：双轴组合图常见的两套网格线叠在一起是视觉噪音。默认只让主轴
+    // （y）画网格，副轴（y1）关掉。
+    A.check('ch-combo-y1-grid-hidden-by-default',
+      comboChart.options.scales.y1.grid.drawOnChartArea === false,
+      'got ' + comboChart.options.scales.y1.grid.drawOnChartArea);
+    A.check('ch-combo-primary-grid-not-hidden',
+      comboChart.options.scales.y.grid.drawOnChartArea !== false,
+      'got ' + comboChart.options.scales.y.grid.drawOnChartArea);
+
+    // 调用方显式配置过 grid.drawOnChartArea 的话，paint() 不该强行覆盖成
+    // false——"没传才补默认值"，不是"总是补"。
+    var scratchHostOverride = document.createElement('div');
+    scratchHostOverride.className = 'ds-chart-host';
+    var scratchCanvasOverride = document.createElement('canvas');
+    scratchHostOverride.appendChild(scratchCanvasOverride);
+    document.body.appendChild(scratchHostOverride);
+    var overrideChart = DS.charts.create(scratchCanvasOverride, {
+      type: 'bar',
+      data: {
+        labels: ['一'],
+        datasets: [
+          { label: 'A', data: [1], yAxisID: 'y' },
+          { label: 'B', type: 'line', data: [2], yAxisID: 'y1' }
+        ]
+      },
+      options: { scales: { y1: { position: 'right', grid: { drawOnChartArea: true } } } }
+    });
+    A.check('ch-combo-secondary-grid-respects-explicit-override',
+      overrideChart.options.scales.y1.grid.drawOnChartArea === true,
+      'got ' + overrideChart.options.scales.y1.grid.drawOnChartArea);
+    DS.charts.destroy(overrideChart);
+    scratchHostOverride.remove();
+
+    // 类目轴上调用方自己提供的 ticks.callback 不该被默认的长标签截断逻辑
+    // 冲掉——这正是时间轴退化方案（DS.charts.dateTicks()）能工作的前提。
+    var scratchHostTicks = document.createElement('div');
+    scratchHostTicks.className = 'ds-chart-host';
+    var scratchCanvasTicks = document.createElement('canvas');
+    scratchHostTicks.appendChild(scratchCanvasTicks);
+    document.body.appendChild(scratchHostTicks);
+    var customTickChart = DS.charts.create(scratchCanvasTicks, {
+      type: 'bar',
+      data: { labels: ['一', '二'], datasets: [{ label: 'A', data: [1, 2] }] },
+      options: { scales: { x: { ticks: { callback: function () { return 'CUSTOM-MARK'; } } } } }
+    });
+    A.check('ch-category-custom-ticks-callback-preserved',
+      customTickChart.options.scales.x.ticks.callback() === 'CUSTOM-MARK', '');
+    DS.charts.destroy(customTickChart);
+    scratchHostTicks.remove();
+
+    // ---------------- 堆叠柱状图 ----------------
+    A.check('ch-stacked-created', stackedChart !== null, '');
+
+    var themeNowStacked = DS.charts.themeColors();
+    A.check('ch-stacked-colors-from-series-tokens',
+      stackedChart.data.datasets[0].backgroundColor === themeNowStacked.series[0] &&
+        stackedChart.data.datasets[1].backgroundColor === themeNowStacked.series[1] &&
+        stackedChart.data.datasets[2].backgroundColor === themeNowStacked.series[2],
+      stackedChart.data.datasets.map(function (d) { return d.backgroundColor; }).join(','));
+
+    var stackedLegendItems = (stackedChart.legend && stackedChart.legend.legendItems) || [];
+    A.check('ch-stacked-legend-count', stackedLegendItems.length === 3,
+      'got ' + stackedLegendItems.length);
+
+    // 真正验证"堆叠"本身：最上面一段柱子的顶部像素，应该落在"三段累加值"
+    // 对应的像素位置，而不是它自己的值单独从 0 起算的位置——这是
+    // scales.x/y.stacked:true 真正生效的可观察后果，不是只回读配置echo。
+    var stackedCatIndex = 0;
+    var stackedCumulative = stackedChart.data.datasets.reduce(function (sum, d) {
+      return sum + d.data[stackedCatIndex];
+    }, 0);
+    var stackedExpectedY = stackedChart.scales.y.getPixelForValue(stackedCumulative);
+    var stackedTopMeta = stackedChart.getDatasetMeta(stackedChart.data.datasets.length - 1);
+    var stackedActualY = stackedTopMeta.data[stackedCatIndex].y;
+    A.check('ch-stacked-bars-cumulative-height',
+      Math.abs(stackedActualY - stackedExpectedY) < 2,
+      'expected=' + stackedExpectedY + ' actual=' + stackedActualY);
+
+    stackedChart.tooltip.setActiveElements([{ datasetIndex: 1, index: 2 }], { x: 0, y: 0 });
+    stackedChart.update('none');
+    var stackedDp = stackedChart.tooltip.dataPoints && stackedChart.tooltip.dataPoints[0];
+    A.check('ch-stacked-tooltip-shows-segment-value',
+      !!stackedDp && stackedDp.raw === stackedRaw[1].data[2],
+      'got ' + (stackedDp && stackedDp.raw) + ' want ' + stackedRaw[1].data[2]);
+    stackedChart.tooltip.setActiveElements([], { x: 0, y: 0 });
+    stackedChart.update('none');
+
+    // 百分比堆叠：Chart.js 无原生支持，这里通过数据归一化实现——切换开关
+    // 之后每个月份三段加起来应约等于 100，tooltip 要能还原原始绝对值。
+    var percentCheckbox = document.getElementById('chk-stacked-percent');
+    percentCheckbox.checked = true;
+    percentCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+    var percentSumsOk = stackedLabels.every(function (_, i) {
+      var sum = stackedChart.data.datasets.reduce(function (s, d) { return s + d.data[i]; }, 0);
+      return Math.abs(sum - 100) < 0.6;
+    });
+    A.check('ch-stacked-percent-sums-to-100', percentSumsOk,
+      stackedLabels.map(function (_, i) {
+        return stackedChart.data.datasets.reduce(function (s, d) { return s + d.data[i]; }, 0);
+      }).join(','));
+
+    stackedChart.tooltip.setActiveElements([{ datasetIndex: 1, index: 2 }], { x: 0, y: 0 });
+    stackedChart.update('none');
+    var percentTipLines = stackedChart.tooltip.body && stackedChart.tooltip.body[0] &&
+      stackedChart.tooltip.body[0].lines;
+    var percentTipLine = (percentTipLines && percentTipLines[0]) || '';
+    A.check('ch-stacked-percent-tooltip-shows-original-value',
+      percentTipLine.indexOf('原始值 ' + stackedRaw[1].data[2]) !== -1,
+      'got ' + percentTipLine);
+    stackedChart.tooltip.setActiveElements([], { x: 0, y: 0 });
+    stackedChart.update('none');
+
+    percentCheckbox.checked = false;
+    percentCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+    var restoredOk = stackedChart.data.datasets.every(function (d, di) {
+      return d.data.join(',') === stackedRaw[di].data.join(',');
+    });
+    A.check('ch-stacked-percent-toggle-off-restores-raw', restoredOk,
+      stackedChart.data.datasets.map(function (d) { return d.data.join('/'); }).join(' | '));
+
+    // ---------------- 面积图 ----------------
+    A.check('ch-area-created', areaChart !== null, '');
+
+    var areaBg0 = areaChart.data.datasets[0].backgroundColor;
+    var areaBorder0 = areaChart.data.datasets[0].borderColor;
+    var areaRgba0 = parseRgba(areaBg0);
+    A.check('ch-area-fill-translucent',
+      !!areaRgba0 && areaRgba0.a > 0 && areaRgba0.a < 1, 'got ' + areaBg0);
+
+    var areaBorderRgb0 = hexToRgbComponents(areaBorder0);
+    A.check('ch-area-fill-rgb-matches-border',
+      !!areaRgba0 && areaRgba0.r === areaBorderRgb0.r && areaRgba0.g === areaBorderRgb0.g &&
+        areaRgba0.b === areaBorderRgb0.b,
+      'fill=' + JSON.stringify(areaRgba0) + ' border=' + JSON.stringify(areaBorderRgb0));
+
+    // 第三个数据集（目标线）没有 fill，backgroundColor 该保持不透明——跟
+    // 普通折线图此前的行为一致，不该被面积图的半透明分支连带影响。
+    var areaPlainBg = areaChart.data.datasets[2].backgroundColor;
+    A.check('ch-area-plain-dataset-stays-opaque',
+      /^#[0-9a-f]{6}$/i.test(areaPlainBg) && parseRgba(areaPlainBg) === null,
+      'got ' + areaPlainBg);
+
+    // 半透明填充在深浅两套主题下都要跟背景有可感知的对比度（WCAG 相对亮度
+    // 公式，跟热力图 svg-heatmap-min-opacity-visible-* 用的是同一套），
+    // 不是只判 alpha > 0——那对"是否肉眼可见"没有鉴别力。
+    var themeBeforeAreaContrast = DS.theme.get();
+    ['light', 'dark'].forEach(function (themeName) {
+      DS.theme.set(themeName);
+      var bg = getComputedStyle(document.documentElement).getPropertyValue('--color-surface').trim();
+      var fillRgba = parseRgba(areaChart.data.datasets[0].backgroundColor);
+      var compositeHex = compositeOverBg(rgbToHex(fillRgba.r, fillRgba.g, fillRgba.b), bg, fillRgba.a);
+      var cr = hexContrast(compositeHex, bg);
+      A.check('ch-area-fill-visible-contrast-' + themeName, cr >= 1.2,
+        'composite=' + compositeHex + ' bg=' + bg + ' contrast=' + cr.toFixed(3));
+    });
+    DS.theme.set(themeBeforeAreaContrast);
+
+    // ---------------- 时间轴（模拟） ----------------
+    A.check('ch-timeaxis-created', timeaxisChart !== null, '');
+
+    var timeaxisTickLabels = timeaxisChart.scales.x.ticks.map(function (t) { return String(t.label); });
+    var timeaxisTicksFormatted = timeaxisTickLabels.length > 0 &&
+      timeaxisTickLabels.every(function (s) { return /^\d{1,2}\/\d{1,2}$/.test(s); });
+    A.check('ch-timeaxis-ticks-formatted', timeaxisTicksFormatted,
+      'got ' + timeaxisTickLabels.join(','));
+
+    var timeaxisBefore = { min: timeaxisChart.scales.x.min, max: timeaxisChart.scales.x.max };
+    timeaxisChart.canvas.parentNode.querySelector('[data-act="in"]').click();
+    var timeaxisAfterWidth = timeaxisChart.scales.x.max - timeaxisChart.scales.x.min;
+    A.check('ch-timeaxis-zoom-works-on-data-domain',
+      DS.charts.isZoomed(timeaxisChart) === true &&
+        timeaxisAfterWidth < (timeaxisBefore.max - timeaxisBefore.min),
+      'before=' + JSON.stringify(timeaxisBefore) + ' afterWidth=' + timeaxisAfterWidth);
+    timeaxisChart.canvas.parentNode.querySelector('[data-act="reset"]').click();
+
+    // dateTicks() 本身是个无状态纯函数，不需要真实图表就能单独核验两种格式。
+    // 固定用 UTC 时间戳，断言产出的字符串不随渲染机器本地时区变化。
+    var mdFn = DS.charts.dateTicks('md');
+    A.check('ch-datetics-md-format',
+      mdFn(Date.UTC(2024, 0, 5)) === '1/5', 'got ' + mdFn(Date.UTC(2024, 0, 5)));
+    var ymdFn = DS.charts.dateTicks('ymd');
+    A.check('ch-datetics-ymd-format',
+      ymdFn(Date.UTC(2024, 11, 31)) === '2024-12-31', 'got ' + ymdFn(Date.UTC(2024, 11, 31)));
+
+    document.querySelector('[data-panel="p-play"]').click();
   });
 })();
