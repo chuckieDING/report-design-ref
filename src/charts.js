@@ -355,8 +355,28 @@ window.DS = window.DS || {};
           var n = (d.data || []).length;
           var palette = [];
           for (var k = 0; k < n; k++) palette.push(c.series[k % c.series.length]);
-          if (d.backgroundColor == null || d.__dsAuto) { d.backgroundColor = palette; d.__dsAuto = true; }
-          if (d.borderColor == null || d.__dsAuto) { d.borderColor = cssVar('--color-surface'); }
+          // __dsAutoBg/__dsAutoBorder 分开标，不共用一个 __dsAuto（复审
+          // 发现的核心 bug）：此前两行共用同一个标志，背景色分支把它置
+          // true 之后，边框分支的 `|| d.__dsAuto` 条件也会连带命中——调用方
+          // 只给了 borderColor、没给 backgroundColor 的话，背景色分支按
+          // "没给"走自动上色并把共享标志置真，边框分支因为这个被别的分支
+          // 置真的标志，把调用方刚设好的颜色当场覆盖掉（变异验证：改回
+          // 这个 bug，185 条既有断言 0 条转红，说明这条路径完全没被测到）。
+          // 反过来，"只给 backgroundColor、不给 borderColor"也有一个对称的
+          // 潜伏 bug：背景色分支因为是调用方自己给的，不会置标志，边框分支
+          // 自动上色后同样没有标志能证明"这是自动色"，下次 retheme 时边框
+          // 会原地冻结在第一次算出来的颜色上、不跟主题切换。拆成两个独立
+          // 标志后两种情形都对了：谁被自动上色、谁的标志就置真，retheme
+          // 只重算标志为真的那一侧，调用方显式给的颜色（不管给的是背景色、
+          // 边框色，还是两个都给）永远不会被覆盖或漏更新。
+          if (d.backgroundColor == null || d.__dsAutoBg) {
+            d.backgroundColor = palette;
+            d.__dsAutoBg = true;
+          }
+          if (d.borderColor == null || d.__dsAutoBorder) {
+            d.borderColor = cssVar('--color-surface');
+            d.__dsAutoBorder = true;
+          }
         } else {
           var color = c.series[i % c.series.length];
           // 面积图（line + fill）：fill 为真值（true / 'origin' / 数字索引 /
@@ -374,11 +394,15 @@ window.DS = window.DS || {};
             (d.fill === true || d.fill === 'origin' ||
              typeof d.fill === 'number' ||
              (typeof d.fill === 'string' && d.fill !== 'false'));
-          if (d.backgroundColor == null || d.__dsAuto) {
+          // __dsAutoBg/__dsAutoBorder 的拆分理由同上面弧形族分支。
+          if (d.backgroundColor == null || d.__dsAutoBg) {
             d.backgroundColor = isFilledLine ? hexToRgba(color, AREA_FILL_ALPHA) : color;
-            d.__dsAuto = true;
+            d.__dsAutoBg = true;
           }
-          if (d.borderColor == null || d.__dsAuto) { d.borderColor = color; }
+          if (d.borderColor == null || d.__dsAutoBorder) {
+            d.borderColor = color;
+            d.__dsAutoBorder = true;
+          }
         }
       });
       return config;

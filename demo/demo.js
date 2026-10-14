@@ -1715,6 +1715,104 @@
     DS.charts.destroy(customTickChart);
     scratchHostTicks.remove();
 
+    // ---------------- __dsAutoBg/__dsAutoBorder（复审核心 bug）----------------
+    // 此前背景色/边框色共用同一个 __dsAuto 标志：调用方只给 borderColor、
+    // 不给 backgroundColor（折线图最常见的自定义写法之一）时，背景色分支
+    // 按"没给"自动上色并把共享标志置真，边框分支的 `|| d.__dsAuto` 条件
+    // 连带命中，把调用方刚设好的颜色当场覆盖掉。四个数据集覆盖全部组合：
+    // 都不给 / 只给 border / 只给 bg（对称的潜伏 bug：bg 保留但 border
+    // 这侧此前永远不会在 retheme 时更新）/ 两个都给。
+    (function () {
+      var colorScratchHost = document.createElement('div');
+      colorScratchHost.className = 'ds-chart-host';
+      var colorScratchCanvas = document.createElement('canvas');
+      colorScratchHost.appendChild(colorScratchCanvas);
+      document.body.appendChild(colorScratchHost);
+
+      var colorChart = DS.charts.create(colorScratchCanvas, {
+        type: 'bar',
+        data: {
+          labels: ['一'],
+          datasets: [
+            { label: '都不给', data: [1] },
+            { label: '只给border', data: [2], borderColor: 'magenta' },
+            { label: '只给bg', data: [3], backgroundColor: 'cyan' },
+            { label: '都给', data: [4], backgroundColor: 'cyan', borderColor: 'magenta' }
+          ]
+        }
+      });
+      var themeAtCreate = DS.charts.themeColors();
+      var cds = colorChart.data.datasets;
+
+      A.check('ch-dataset-colors-both-auto-when-omitted',
+        cds[0].backgroundColor === themeAtCreate.series[0] && cds[0].borderColor === themeAtCreate.series[0],
+        JSON.stringify({ bg: cds[0].backgroundColor, border: cds[0].borderColor }));
+
+      A.check('ch-dataset-colors-border-only-preserves-caller-border',
+        cds[1].backgroundColor === themeAtCreate.series[1] && cds[1].borderColor === 'magenta',
+        JSON.stringify({ bg: cds[1].backgroundColor, border: cds[1].borderColor }));
+
+      A.check('ch-dataset-colors-bg-only-preserves-caller-bg',
+        cds[2].backgroundColor === 'cyan' && cds[2].borderColor === themeAtCreate.series[2],
+        JSON.stringify({ bg: cds[2].backgroundColor, border: cds[2].borderColor }));
+
+      A.check('ch-dataset-colors-both-given-preserved',
+        cds[3].backgroundColor === 'cyan' && cds[3].borderColor === 'magenta',
+        JSON.stringify({ bg: cds[3].backgroundColor, border: cds[3].borderColor }));
+
+      // retheme 之后：自动上色的一侧要跟着"当前主题"重算，调用方显式给的
+      // 颜色必须原样不变——这正是对称潜伏 bug（只给 bg 时 border 该跟着
+      // retheme 更新）的直接验证。六条序列色深浅主题同值，光比较"retheme
+      // 后等不等于当前主题色"对这条潜伏 bug **没有鉴别力**：如果 retheme
+      // 根本没碰这个字段，它仍然停在创建时算出来的旧值，而旧值恰好也等于
+      // "当前主题"的 series 色（因为两套主题这条序列色本来就同值）——实测
+      // 验证过这个坑：先按"直接比较"的写法试过一版，把 __dsAutoBg/
+      // __dsAutoBorder 改回合并成一个 __dsAuto 的旧 bug 代码复现一遍，
+      // 'bg-only' 这组断言依然全绿。改用 README 决策记录第 20 条同一套
+      // 手法：retheme 前把"应该被自动重算"的那个字段污染成哨兵垃圾值，
+      // 断言 retheme 之后它被正确覆盖回当前主题色——只有 retheme 真的摸过
+      // 这个字段才会通过。
+      cds[1].backgroundColor = 'rgb(11, 22, 33)';
+      cds[2].borderColor = 'rgb(44, 55, 66)';
+      DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+      var themeAfter = DS.charts.themeColors();
+      A.check('ch-dataset-colors-border-only-bg-tracks-retheme',
+        cds[1].backgroundColor === themeAfter.series[1], 'got ' + cds[1].backgroundColor);
+      A.check('ch-dataset-colors-border-only-border-survives-retheme',
+        cds[1].borderColor === 'magenta', 'got ' + cds[1].borderColor);
+      A.check('ch-dataset-colors-bg-only-border-tracks-retheme',
+        cds[2].borderColor === themeAfter.series[2], 'got ' + cds[2].borderColor);
+      A.check('ch-dataset-colors-bg-only-bg-survives-retheme',
+        cds[2].backgroundColor === 'cyan', 'got ' + cds[2].backgroundColor);
+      A.check('ch-dataset-colors-both-given-survive-retheme',
+        cds[3].backgroundColor === 'cyan' && cds[3].borderColor === 'magenta', '');
+      DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+
+      DS.charts.destroy(colorChart);
+      colorScratchHost.remove();
+    })();
+
+    // 弧形族同病（src/charts.js 里紧邻 __dsAuto 的那两行）：doughnut 数据集
+    // 只给 borderColor，backgroundColor 该自动给数组色板，borderColor
+    // 原样保留——此前会被覆盖成 --color-surface。
+    (function () {
+      var arcScratchHost = document.createElement('div');
+      arcScratchHost.className = 'ds-chart-host';
+      var arcScratchCanvas = document.createElement('canvas');
+      arcScratchHost.appendChild(arcScratchCanvas);
+      document.body.appendChild(arcScratchHost);
+      var arcChart = DS.charts.create(arcScratchCanvas, {
+        type: 'doughnut',
+        data: { labels: ['a', 'b'], datasets: [{ data: [1, 2], borderColor: 'magenta' }] }
+      });
+      A.check('ch-arc-dataset-border-only-preserves-caller-border',
+        Array.isArray(arcChart.data.datasets[0].backgroundColor) &&
+          arcChart.data.datasets[0].borderColor === 'magenta',
+        JSON.stringify(arcChart.data.datasets[0]));
+      DS.charts.destroy(arcChart);
+      arcScratchHost.remove();
+    })();
+
     // ---------------- 堆叠柱状图 ----------------
     A.check('ch-stacked-created', stackedChart !== null, '');
 

@@ -968,8 +968,28 @@ window.DS = window.DS || {};
           var n = (d.data || []).length;
           var palette = [];
           for (var k = 0; k < n; k++) palette.push(c.series[k % c.series.length]);
-          if (d.backgroundColor == null || d.__dsAuto) { d.backgroundColor = palette; d.__dsAuto = true; }
-          if (d.borderColor == null || d.__dsAuto) { d.borderColor = cssVar('--color-surface'); }
+          // __dsAutoBg/__dsAutoBorder 分开标，不共用一个 __dsAuto（复审
+          // 发现的核心 bug）：此前两行共用同一个标志，背景色分支把它置
+          // true 之后，边框分支的 `|| d.__dsAuto` 条件也会连带命中——调用方
+          // 只给了 borderColor、没给 backgroundColor 的话，背景色分支按
+          // "没给"走自动上色并把共享标志置真，边框分支因为这个被别的分支
+          // 置真的标志，把调用方刚设好的颜色当场覆盖掉（变异验证：改回
+          // 这个 bug，185 条既有断言 0 条转红，说明这条路径完全没被测到）。
+          // 反过来，"只给 backgroundColor、不给 borderColor"也有一个对称的
+          // 潜伏 bug：背景色分支因为是调用方自己给的，不会置标志，边框分支
+          // 自动上色后同样没有标志能证明"这是自动色"，下次 retheme 时边框
+          // 会原地冻结在第一次算出来的颜色上、不跟主题切换。拆成两个独立
+          // 标志后两种情形都对了：谁被自动上色、谁的标志就置真，retheme
+          // 只重算标志为真的那一侧，调用方显式给的颜色（不管给的是背景色、
+          // 边框色，还是两个都给）永远不会被覆盖或漏更新。
+          if (d.backgroundColor == null || d.__dsAutoBg) {
+            d.backgroundColor = palette;
+            d.__dsAutoBg = true;
+          }
+          if (d.borderColor == null || d.__dsAutoBorder) {
+            d.borderColor = cssVar('--color-surface');
+            d.__dsAutoBorder = true;
+          }
         } else {
           var color = c.series[i % c.series.length];
           // 面积图（line + fill）：fill 为真值（true / 'origin' / 数字索引 /
@@ -987,11 +1007,15 @@ window.DS = window.DS || {};
             (d.fill === true || d.fill === 'origin' ||
              typeof d.fill === 'number' ||
              (typeof d.fill === 'string' && d.fill !== 'false'));
-          if (d.backgroundColor == null || d.__dsAuto) {
+          // __dsAutoBg/__dsAutoBorder 的拆分理由同上面弧形族分支。
+          if (d.backgroundColor == null || d.__dsAutoBg) {
             d.backgroundColor = isFilledLine ? hexToRgba(color, AREA_FILL_ALPHA) : color;
-            d.__dsAuto = true;
+            d.__dsAutoBg = true;
           }
-          if (d.borderColor == null || d.__dsAuto) { d.borderColor = color; }
+          if (d.borderColor == null || d.__dsAutoBorder) {
+            d.borderColor = color;
+            d.__dsAutoBorder = true;
+          }
         }
       });
       return config;
@@ -3351,6 +3375,104 @@ window.DS_MOCK = (function () {
       customTickChart.options.scales.x.ticks.callback() === 'CUSTOM-MARK', '');
     DS.charts.destroy(customTickChart);
     scratchHostTicks.remove();
+
+    // ---------------- __dsAutoBg/__dsAutoBorder（复审核心 bug）----------------
+    // 此前背景色/边框色共用同一个 __dsAuto 标志：调用方只给 borderColor、
+    // 不给 backgroundColor（折线图最常见的自定义写法之一）时，背景色分支
+    // 按"没给"自动上色并把共享标志置真，边框分支的 `|| d.__dsAuto` 条件
+    // 连带命中，把调用方刚设好的颜色当场覆盖掉。四个数据集覆盖全部组合：
+    // 都不给 / 只给 border / 只给 bg（对称的潜伏 bug：bg 保留但 border
+    // 这侧此前永远不会在 retheme 时更新）/ 两个都给。
+    (function () {
+      var colorScratchHost = document.createElement('div');
+      colorScratchHost.className = 'ds-chart-host';
+      var colorScratchCanvas = document.createElement('canvas');
+      colorScratchHost.appendChild(colorScratchCanvas);
+      document.body.appendChild(colorScratchHost);
+
+      var colorChart = DS.charts.create(colorScratchCanvas, {
+        type: 'bar',
+        data: {
+          labels: ['一'],
+          datasets: [
+            { label: '都不给', data: [1] },
+            { label: '只给border', data: [2], borderColor: 'magenta' },
+            { label: '只给bg', data: [3], backgroundColor: 'cyan' },
+            { label: '都给', data: [4], backgroundColor: 'cyan', borderColor: 'magenta' }
+          ]
+        }
+      });
+      var themeAtCreate = DS.charts.themeColors();
+      var cds = colorChart.data.datasets;
+
+      A.check('ch-dataset-colors-both-auto-when-omitted',
+        cds[0].backgroundColor === themeAtCreate.series[0] && cds[0].borderColor === themeAtCreate.series[0],
+        JSON.stringify({ bg: cds[0].backgroundColor, border: cds[0].borderColor }));
+
+      A.check('ch-dataset-colors-border-only-preserves-caller-border',
+        cds[1].backgroundColor === themeAtCreate.series[1] && cds[1].borderColor === 'magenta',
+        JSON.stringify({ bg: cds[1].backgroundColor, border: cds[1].borderColor }));
+
+      A.check('ch-dataset-colors-bg-only-preserves-caller-bg',
+        cds[2].backgroundColor === 'cyan' && cds[2].borderColor === themeAtCreate.series[2],
+        JSON.stringify({ bg: cds[2].backgroundColor, border: cds[2].borderColor }));
+
+      A.check('ch-dataset-colors-both-given-preserved',
+        cds[3].backgroundColor === 'cyan' && cds[3].borderColor === 'magenta',
+        JSON.stringify({ bg: cds[3].backgroundColor, border: cds[3].borderColor }));
+
+      // retheme 之后：自动上色的一侧要跟着"当前主题"重算，调用方显式给的
+      // 颜色必须原样不变——这正是对称潜伏 bug（只给 bg 时 border 该跟着
+      // retheme 更新）的直接验证。六条序列色深浅主题同值，光比较"retheme
+      // 后等不等于当前主题色"对这条潜伏 bug **没有鉴别力**：如果 retheme
+      // 根本没碰这个字段，它仍然停在创建时算出来的旧值，而旧值恰好也等于
+      // "当前主题"的 series 色（因为两套主题这条序列色本来就同值）——实测
+      // 验证过这个坑：先按"直接比较"的写法试过一版，把 __dsAutoBg/
+      // __dsAutoBorder 改回合并成一个 __dsAuto 的旧 bug 代码复现一遍，
+      // 'bg-only' 这组断言依然全绿。改用 README 决策记录第 20 条同一套
+      // 手法：retheme 前把"应该被自动重算"的那个字段污染成哨兵垃圾值，
+      // 断言 retheme 之后它被正确覆盖回当前主题色——只有 retheme 真的摸过
+      // 这个字段才会通过。
+      cds[1].backgroundColor = 'rgb(11, 22, 33)';
+      cds[2].borderColor = 'rgb(44, 55, 66)';
+      DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+      var themeAfter = DS.charts.themeColors();
+      A.check('ch-dataset-colors-border-only-bg-tracks-retheme',
+        cds[1].backgroundColor === themeAfter.series[1], 'got ' + cds[1].backgroundColor);
+      A.check('ch-dataset-colors-border-only-border-survives-retheme',
+        cds[1].borderColor === 'magenta', 'got ' + cds[1].borderColor);
+      A.check('ch-dataset-colors-bg-only-border-tracks-retheme',
+        cds[2].borderColor === themeAfter.series[2], 'got ' + cds[2].borderColor);
+      A.check('ch-dataset-colors-bg-only-bg-survives-retheme',
+        cds[2].backgroundColor === 'cyan', 'got ' + cds[2].backgroundColor);
+      A.check('ch-dataset-colors-both-given-survive-retheme',
+        cds[3].backgroundColor === 'cyan' && cds[3].borderColor === 'magenta', '');
+      DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+
+      DS.charts.destroy(colorChart);
+      colorScratchHost.remove();
+    })();
+
+    // 弧形族同病（src/charts.js 里紧邻 __dsAuto 的那两行）：doughnut 数据集
+    // 只给 borderColor，backgroundColor 该自动给数组色板，borderColor
+    // 原样保留——此前会被覆盖成 --color-surface。
+    (function () {
+      var arcScratchHost = document.createElement('div');
+      arcScratchHost.className = 'ds-chart-host';
+      var arcScratchCanvas = document.createElement('canvas');
+      arcScratchHost.appendChild(arcScratchCanvas);
+      document.body.appendChild(arcScratchHost);
+      var arcChart = DS.charts.create(arcScratchCanvas, {
+        type: 'doughnut',
+        data: { labels: ['a', 'b'], datasets: [{ data: [1, 2], borderColor: 'magenta' }] }
+      });
+      A.check('ch-arc-dataset-border-only-preserves-caller-border',
+        Array.isArray(arcChart.data.datasets[0].backgroundColor) &&
+          arcChart.data.datasets[0].borderColor === 'magenta',
+        JSON.stringify(arcChart.data.datasets[0]));
+      DS.charts.destroy(arcChart);
+      arcScratchHost.remove();
+    })();
 
     // ---------------- 堆叠柱状图 ----------------
     A.check('ch-stacked-created', stackedChart !== null, '');
