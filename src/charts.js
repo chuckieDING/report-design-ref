@@ -226,7 +226,22 @@ window.DS = window.DS || {};
         // 判定，不能各写各的（Review C1）。
         var categoryAxis = zoomAxisFor(o.indexAxis);
         o.scales = o.scales || {};
-        ['x', 'y'].forEach(function (axis) {
+        // Bug 3：双轴（量 + 率）组合图常见的第二数值轴通常叫 y1（跟
+        // dataset.yAxisID 对应），此前这里写死 ['x', 'y']，y1 的网格/刻度/
+        // 轴线颜色从来没被注入过，切深色主题时会留在浅色。'x'/'y' 是任何
+        // 笛卡尔图默认都有的两根轴，哪怕调用方的 config.options.scales 里
+        // 完全没提（Chart.js 会隐式补全），所以继续无条件处理这两个——
+        // 这保住了此前的全部行为。调用方自己额外声明的轴（y1、以至于
+        // 任何将来出现的命名）从 o.scales 的实际 key 里读出来，并入同一套
+        // 注入循环；不区分类目轴以外的"类型"，因为这里能出现的只有类目轴
+        // （上面 categoryAxis 判定出的那一个，必然是 'x' 或 'y'）和数值轴
+        // 两种，数值轴统一走 else 分支（只上色，不截断标签），额外轴天然
+        // 落在这一类。
+        var axisNames = ['x', 'y'];
+        Object.keys(o.scales).forEach(function (name) {
+          if (axisNames.indexOf(name) === -1) axisNames.push(name);
+        });
+        axisNames.forEach(function (axis) {
           o.scales[axis] = o.scales[axis] || {};
           var s = o.scales[axis];
           s.grid = s.grid || {};
@@ -521,7 +536,25 @@ window.DS = window.DS || {};
         if (act === 'in') DS.charts.zoom(chart, 1.25);
         else if (act === 'out') DS.charts.zoom(chart, 0.8);
         else if (act === 'reset') DS.charts.resetZoom(chart);
-        else if (act === 'full') host.classList.toggle('ds-chart-fullscreen');
+        else if (act === 'full') {
+          host.classList.toggle('ds-chart-fullscreen');
+          // Bug 2（用户报的）：全屏进出后图表尺寸不对。Chart.js 的自适应靠
+          // ResizeObserver，其回调链依赖 requestAnimationFrame——这个仓库
+          // 本来就不允许用 rAF（本机 headless chromium 的 rAF 回调也永不
+          // 触发），所以切完 class 后不能坐等 ResizeObserver 自己醒过来，
+          // 必须主动 resize()。
+          //
+          // 调用时机：这里是同步调用，不经 setTimeout。实测验证过（见
+          // _render/ 下的探针）——classList.toggle() 一旦执行，
+          // getBoundingClientRect() 读到的就已经是新布局后的尺寸，不需要
+          // 等下一轮事件循环；Chart.resize() 内部正是通过读取 canvas 父元素
+          // 的包围盒来决定新尺寸，所以紧跟着同步调用已经足够，进/出全屏都
+          // 能在同一次点击里正确定格，不会有"新布局还没生效就测量"的问题。
+          // 如果未来改动（比如给 .ds-chart-fullscreen 加 CSS transition）
+          // 导致同步测量不再可靠，这里要改的是等一拍再 resize()——用
+          // setTimeout，不要用 rAF（仓库硬约束，见文件顶部注释）。
+          chart.resize();
+        }
       });
       DS.charts._syncHint(chart);
     },

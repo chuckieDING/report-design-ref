@@ -92,6 +92,57 @@ window.DS = window.DS || {};
     return stripped !== '' && isFinite(stripped) ? parseFloat(stripped) : NaN;
   }
 
+  // Bug 1（用户报的）：中文数字按拼音排序——"一号仪器/二号仪器/三号仪器/
+  // 备用仪器"这类机台/产线/车间命名在报表里极其常见，此前整列落到
+  // localeCompare(zh-Hans-CN) 的拼音序，"一"（yi）排到了"二"（er）、
+  // "三"（san）后面。这里识别单元格*开头*的中文数字（0~99：〇/零、
+  // 一~十、十一~十九、二十~九十九这类组合），按数值而不是拼音排序。
+  //
+  // 覆盖"两"吗？不覆盖。"两"在计数语境里确实等同"二"（两号机），但报表
+  // 标签几乎总写"二号/二楼/二车间"，不写"两号/两楼"；反而"两难/两极/
+  // 两性/两栖/两者/两全"这类常见词比对应的"二 + 字"组合常见得多，纳入
+  // "两"会把误伤面扩大却换不来真实收益。真遇到"两号机"这类用法，再把
+  // "两"加进 CN_DIGIT 并给对应的习语补黑名单。
+  //
+  // 不误伤"一次性""十字路口""百分之一"这类词，走两层规则：
+  //   1）数字集合只到"十"，不含百/千/万——"百分之一"开头的"百"本来就不
+  //      在识别范围内，第一步就不匹配，不需要额外规则。
+  //   2）识别到的数字后面如果紧跟着一个把数字"虚化"成功能词/习语的字
+  //      （十字、一次性、一下、十分……，见 CN_NUM_SUFFIX_BLACKLIST），
+  //      整条放弃提取、退回原字符串处理。这张表不追求穷举——漏判（该提
+  //      取的没提取）只是退回拼音序，不是错误；误判（不该提取的提取了）
+  //      才会把本该当文本处理的列错误地当数字列处理，危害更大，所以只
+  //      收录已知会出问题的高频用字，新发现误伤按需追加。
+  // 数字可以是前缀（"一号仪器"）也可以独立成词（单元格整体就是"三"）：
+  // 独立成词时没有"后面紧跟的字"，天然不会命中黑名单。
+  var CN_DIGIT = {
+    '〇': 0, '零': 0,                                   // 〇 零
+    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+    '六': 6, '七': 7, '八': 8, '九': 9           // 一二三四五六七八九
+  };
+  var CN_NUM_RE = /^(?:([二三四五六七八九]?)十([一二三四五六七八九]?)|([〇零一二三四五六七八九]))/;
+  var CN_NUM_SUFFIX_BLACKLIST = {
+    '次': 1, '字': 1, '分': 1, '些': 1, '般': 1, '起': 1, '直': 1, '定': 1,
+    '切': 1, '半': 1, '样': 1, '下': 1, '共': 1, '向': 1, '概': 1, '律': 1,
+    '旦': 1, '致': 1, '心': 1, '面': 1, '并': 1
+  };
+
+  function parseLeadingChineseNumeral(raw) {
+    var m = CN_NUM_RE.exec(raw);
+    if (!m) return NaN;
+    var value;
+    if (m[3] !== undefined) {
+      value = CN_DIGIT[m[3]];
+    } else {
+      var tens = m[1] ? CN_DIGIT[m[1]] : 1;   // "十"前面没写数字按一十算（十 == 一十）
+      var ones = m[2] ? CN_DIGIT[m[2]] : 0;
+      value = tens * 10 + ones;
+    }
+    var rest = raw.slice(m[0].length);
+    if (rest !== '' && CN_NUM_SUFFIX_BLACKLIST.hasOwnProperty(rest.charAt(0))) return NaN;
+    return value;
+  }
+
   DS.tables = {
     sortable: function (tableSelector) {
       var table = document.querySelector(tableSelector);
@@ -131,6 +182,17 @@ window.DS = window.DS || {};
           return t === '' || !isNaN(parseSortableNumber(t));
         });
 
+        /* Bug 1：中文数字前缀列（"一号仪器"/"三车间"）优先级低于上面的阿拉伯
+           数字判定——列里只要全部单元格都能走阿拉伯数字路径就不会走到这里，
+           跟此前的行为完全一致，不会搅动千分位/百分号/时长这些既有列。只有
+           在阿拉伯数字判定失败、且列里*至少有一个*单元格能识别出中文数字
+           前缀时，才按中文数字主键排序；一个中文数字前缀都识别不出的纯文本
+           列（含被黑名单挡下的"十字路口"这类词、以及真正的纯文本列）原样
+           退回下面的 localeCompare 分支，不受影响。 */
+        var columnHasChineseNumeral = !columnIsNumeric && rows.some(function (r) {
+          return !isNaN(parseLeadingChineseNumeral(cellText(r)));
+        });
+
         rows.sort(function (a, b) {
           var x = cellText(a), y = cellText(b);
           if (columnIsNumeric) {
@@ -140,6 +202,25 @@ window.DS = window.DS || {};
             if (yEmpty) return -1;
             var cmp = parseSortableNumber(x) - parseSortableNumber(y);
             return asc ? cmp : -cmp;
+          }
+          if (columnHasChineseNumeral) {
+            var xv = parseLeadingChineseNumeral(x), yv = parseLeadingChineseNumeral(y);
+            var xHas = !isNaN(xv), yHas = !isNaN(yv);
+            // 识别不出中文数字前缀的单元格（含空单元格）无条件排在末尾，
+            // 升/降序都一样——跟上面阿拉伯数字列"空单元格无条件最后"的
+            // 既有约定保持一致。
+            if (!xHas && !yHas) {
+              var cmpBoth = x.localeCompare(y, 'zh-Hans-CN');
+              return asc ? cmpBoth : -cmpBoth;
+            }
+            if (!xHas) return 1;
+            if (!yHas) return -1;
+            if (xv !== yv) {
+              var cmpCn = xv - yv;
+              return asc ? cmpCn : -cmpCn;
+            }
+            var cmpTie = x.localeCompare(y, 'zh-Hans-CN');  // 同数值退回拼音序
+            return asc ? cmpTie : -cmpTie;
           }
           var cmp2 = x.localeCompare(y, 'zh-Hans-CN');
           return asc ? cmp2 : -cmp2;

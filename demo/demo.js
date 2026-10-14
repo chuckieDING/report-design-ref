@@ -193,6 +193,20 @@
       '  <tbody><tr><td>3.5h</td></tr><tr><td>12h</td></tr><tr><td>1h</td></tr></tbody></table>',
       '<table class="ds-table" id="t-table-colontime"><thead><tr><th>列</th></tr></thead>',
       '  <tbody><tr><td>02:14</td></tr><tr><td>10:05</td></tr><tr><td>1:30</td></tr></tbody></table>',
+      // Bug 1（用户报的）：中文数字按拼音排序。下面四张表分别覆盖——
+      // 主场景（数字前缀 + 不带数字的纯文本混排）、十一~九十九组合、
+      // 独立成词（含 〇/零）、以及"不该被当数字"的三个反例不得误伤。
+      '<table class="ds-table" id="t-table-cn-numeral"><thead><tr><th>仪器</th></tr></thead>',
+      '  <tbody><tr><td>一号仪器</td></tr><tr><td>二号仪器</td></tr>',
+      '    <tr><td>三号仪器</td></tr><tr><td>备用仪器</td></tr></tbody></table>',
+      '<table class="ds-table" id="t-table-cn-numeral-tens"><thead><tr><th>产线</th></tr></thead>',
+      '  <tbody><tr><td>三十五号线</td></tr><tr><td>九号线</td></tr>',
+      '    <tr><td>二十号线</td></tr><tr><td>十一号线</td></tr><tr><td>十号线</td></tr></tbody></table>',
+      '<table class="ds-table" id="t-table-cn-numeral-standalone"><thead><tr><th>编号</th></tr></thead>',
+      '  <tbody><tr><td>十</td></tr><tr><td>二</td></tr><tr><td>一</td></tr><tr><td>零</td></tr></tbody></table>',
+      '<table class="ds-table" id="t-table-cn-numeral-safe"><thead><tr><th>名称</th></tr></thead>',
+      '  <tbody><tr><td>十字路口</td></tr><tr><td>一次性耗材</td></tr>',
+      '    <tr><td>百分之一</td></tr><tr><td>阿拉伯数字耗材</td></tr></tbody></table>',
       '<div id="g1-tabs" class="ds-tabs">',
       '  <button type="button" class="ds-tab" aria-selected="true" data-panel="g1-a">A</button>',
       '  <button type="button" class="ds-tab" aria-selected="false" data-panel="g1-b">B</button>',
@@ -208,6 +222,7 @@
       '<div class="ds-chart-host"><canvas id="c-reuse"></canvas></div>',
       '<div class="ds-chart-host"><canvas id="c-poison"></canvas></div>',
       '<div class="ds-chart-host"><canvas id="c-guard"></canvas></div>',
+      '<div class="ds-chart-host"><canvas id="c-dualaxis"></canvas></div>',
       '<div id="s-iso-guard"></div>',
       '<div id="s-iso-poison"></div>',
       '<div id="s-iso-guard2"></div>'
@@ -269,6 +284,10 @@
     DS.tables.sortable('#t-table-percent');
     DS.tables.sortable('#t-table-duration');
     DS.tables.sortable('#t-table-colontime');
+    DS.tables.sortable('#t-table-cn-numeral');
+    DS.tables.sortable('#t-table-cn-numeral-tens');
+    DS.tables.sortable('#t-table-cn-numeral-standalone');
+    DS.tables.sortable('#t-table-cn-numeral-safe');
     DS.tabs.init('#g1-tabs');
     DS.tabs.init('#g2-tabs');
   }
@@ -365,6 +384,7 @@
      retheme 逐图隔离（见下方 svgCharts 套件追加的断言）。 */
   var poisonChart = null;
   var guardChart = null;
+  var dualAxisChart = null;
   if (selftestMode) {
     // I4：人为制造一张「retheme 时必炸」的图，验证它不会拖垮 registry 里
     // 排在它后面的图。poisonConfig.scales 换成一个 getter 返回 falsy、setter
@@ -382,6 +402,22 @@
     });
     guardChart = makeChart(document.getElementById('c-guard'), {
       type: 'bar', data: { labels: ['卫'], datasets: [{ label: '哨兵图', data: [3] }] }
+    });
+
+    // Bug 3：报表里"量 + 率"双轴组合图常见的第二数值轴，键名通常是 y1
+    // （跟 dataset.yAxisID 对应）。故意不预先给 y1 塞 grid/ticks/border——
+    // 这些必须是 paint() 自己注入的，留白才能验出"根本没注入"和"注入了但
+    // 颜色不对"两种情况，而不是巧合地碰上调用方自己写的颜色。
+    dualAxisChart = makeChart(document.getElementById('c-dualaxis'), {
+      type: 'bar',
+      data: {
+        labels: ['一月', '二月', '三月'],
+        datasets: [
+          { label: '量', data: [10, 20, 30], yAxisID: 'y' },
+          { label: '率', type: 'line', data: [0.1, 0.2, 0.3], yAxisID: 'y1' }
+        ]
+      },
+      options: { scales: { y1: { position: 'right' } } }
     });
 
     // DS.svg 的 registry 按 host 插入顺序 push、retheme 时当前实现是逆序
@@ -558,6 +594,47 @@
     A.check('ix-table-sorts-colon-time',
       colonTimeCells.join('|') === '1:30|02:14|10:05', 'got ' + colonTimeCells.join('|'));
 
+    // Bug 1（用户报的）：中文数字前缀列（"一号仪器"/"三号线"）按数值排序，
+    // 不再退化成 localeCompare(zh-Hans-CN) 的拼音序（之前"一"会排到"二"
+    // "三"后面）。"备用仪器"没有中文数字前缀，无条件排在末尾，升/降序
+    // 都一样，跟阿拉伯数字列里空单元格的既有约定一致。
+    var cnNumeralAsc = columnCellsAfterSort('#t-table-cn-numeral');
+    A.check('ix-table-sorts-chinese-numeral',
+      cnNumeralAsc.join('|') === '一号仪器|二号仪器|三号仪器|备用仪器',
+      'got ' + cnNumeralAsc.join('|'));
+    document.querySelector('#t-table-cn-numeral th').click();  // 第二次点击：降序
+    var cnNumeralDesc = Array.prototype.map.call(
+      document.querySelectorAll('#t-table-cn-numeral tbody td'),
+      function (td) { return td.textContent.trim(); });
+    A.check('ix-table-sorts-chinese-numeral-desc',
+      cnNumeralDesc.join('|') === '三号仪器|二号仪器|一号仪器|备用仪器',
+      'got ' + cnNumeralDesc.join('|'));
+
+    // 十一~九十九的组合（十位+个位），覆盖"X十""十X""X十Y"三种形态。
+    var cnTensCells = columnCellsAfterSort('#t-table-cn-numeral-tens');
+    A.check('ix-table-sorts-chinese-numeral-tens',
+      cnTensCells.join('|') === '九号线|十号线|十一号线|二十号线|三十五号线',
+      'got ' + cnTensCells.join('|'));
+
+    // 独立成词（单元格整体就是一个中文数字，不是前缀），含 〇/零。
+    var cnStandaloneCells = columnCellsAfterSort('#t-table-cn-numeral-standalone');
+    A.check('ix-table-sorts-chinese-numeral-standalone',
+      cnStandaloneCells.join('|') === '零|一|二|十',
+      'got ' + cnStandaloneCells.join('|'));
+
+    // 不误伤："一次性耗材""十字路口""百分之一"都以中文数字字符开头，但
+    // 整体是固定词/习语，不是"编号+名词"标签，一个都不该被提取出数值——
+    // 整列退回 localeCompare，结果须跟独立调用 localeCompare 排序完全一致
+    // （而不是巧合地凑出同一个顺序）。
+    var cnSafeWords = ['十字路口', '一次性耗材', '百分之一', '阿拉伯数字耗材'];
+    var cnSafeExpected = cnSafeWords.slice().sort(function (a, b) {
+      return a.localeCompare(b, 'zh-Hans-CN');
+    });
+    var cnSafeCells = columnCellsAfterSort('#t-table-cn-numeral-safe');
+    A.check('ix-table-sorts-chinese-numeral-no-false-positive',
+      cnSafeCells.join('|') === cnSafeExpected.join('|'),
+      'got ' + cnSafeCells.join('|') + ' want ' + cnSafeExpected.join('|'));
+
     // 幂等保护：init 阶段故意对 #t-table-idem 调了两次 sortable，
     // 若监听器叠加，一次点击会被连续触发两次，"升序"反而落到降序结果 10,2
     document.querySelector('#t-table-idem th').click();
@@ -725,6 +802,36 @@
     A.check('ch-retheme-series-changed',
       barChart.data.datasets[0].backgroundColor === DS.charts.themeColors().series[0],
       'got ' + barChart.data.datasets[0].backgroundColor);
+    DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+
+    // Bug 3（用户报的）：paint() 此前写死 ['x', 'y']，双轴图的第二个轴
+    // （常见命名 y1，对应 dataset.yAxisID）网格/刻度/轴线颜色从来没被
+    // 注入过。c-dualaxis 的 config.options.scales.y1 创建时只给了
+    // { position: 'right' }，grid/ticks/border 全部留白，这里直接读取
+    // "paint() 跑完之后" y1 到底被写了什么——留白是故意的，确保能分辨
+    // "完全没注入"（y1.grid 不存在）和"注入了但凑巧撞对颜色"两种情况。
+    function scaleColors(chart, axis) {
+      var s = (chart.options.scales && chart.options.scales[axis]) || {};
+      return {
+        grid: s.grid && s.grid.color,
+        ticks: s.ticks && s.ticks.color,
+        border: s.border && s.border.color
+      };
+    }
+    var themeNow = DS.charts.themeColors();
+    var y1Colors = scaleColors(dualAxisChart, 'y1');
+    A.check('ch-dualaxis-y1-colors-injected',
+      y1Colors.grid === themeNow.grid && y1Colors.ticks === themeNow.text &&
+        y1Colors.border === themeNow.axis,
+      'got ' + JSON.stringify(y1Colors) + ' want ' + JSON.stringify(themeNow));
+
+    DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+    var y1ColorsAfter = scaleColors(dualAxisChart, 'y1');
+    var themeAfter = DS.charts.themeColors();
+    A.check('ch-dualaxis-y1-colors-track-theme',
+      y1ColorsAfter.grid === themeAfter.grid && y1ColorsAfter.grid !== y1Colors.grid &&
+        y1ColorsAfter.ticks === themeAfter.text && y1ColorsAfter.border === themeAfter.axis,
+      'before=' + JSON.stringify(y1Colors) + ' after=' + JSON.stringify(y1ColorsAfter));
     DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
 
     // I1：弧形族不该被塞 x/y 轴
@@ -939,10 +1046,38 @@
 
     // 工具条：全屏按钮切换宿主的 fullscreen class
     var host = c.canvas.parentNode;
+    // Bug 2（用户报的）：全屏进出后图表尺寸不对。此前只验证了 class 加了又
+    // 去了（CSS 层面），没验证 Chart.js 实际画布尺寸真的跟着变——这正是
+    // 用户遇到的问题："全屏中图表没跟着放大、退出后尺寸也不对"。canvas.width/
+    // height 是 Chart.js 的画布缓冲区像素尺寸，只有真正调用 resize() 才会
+    // 变；CSS class 本身不会让它自己变化（这也是这条 bug 存在的原因）。
+    var canvasSizeBeforeFullscreen = { w: c.canvas.width, h: c.canvas.height };
+    var hostRectDuringFullscreen;
     c.canvas.parentNode.querySelector('[data-act="full"]').click();
     A.check('wh-toolbar-full-toggles-on', host.classList.contains('ds-chart-fullscreen') === true, '');
+    hostRectDuringFullscreen = host.getBoundingClientRect();
+    // .ds-chart-fullscreen 是 position:fixed; inset:24px——高度几乎总是
+    // 大涨（平时固定 260px，全屏后约等于视口高度），但宽度不一定：取决于
+    // 卡片原宽度跟视口宽度的关系，窄视口下全屏宽度甚至可能比原来还小。
+    // 不能断言"宽高都必然变大"，只能断言"canvas 真的跟着当前 host 尺寸走"
+    // ——这就是 bug 本身：此前 canvas 完全不随 host 变化，两者会相差一大截
+    // （差值约等于 host 尺寸变化量本身），resize() 生效后应该只差一个
+    // host 内边距（16px）量级。
+    A.check('wh-fullscreen-canvas-tracks-host-size',
+      Math.abs(c.canvas.width - hostRectDuringFullscreen.width) < 60 &&
+        Math.abs(c.canvas.height - hostRectDuringFullscreen.height) < 60,
+      'canvas=' + c.canvas.width + 'x' + c.canvas.height +
+        ' host=' + Math.round(hostRectDuringFullscreen.width) + 'x' + Math.round(hostRectDuringFullscreen.height));
+    A.check('wh-fullscreen-canvas-size-changes',
+      c.canvas.width !== canvasSizeBeforeFullscreen.w || c.canvas.height !== canvasSizeBeforeFullscreen.h,
+      'before=' + JSON.stringify(canvasSizeBeforeFullscreen) +
+        ' after=' + c.canvas.width + 'x' + c.canvas.height);
     c.canvas.parentNode.querySelector('[data-act="full"]').click();
     A.check('wh-toolbar-full-toggles-off', host.classList.contains('ds-chart-fullscreen') === false, '');
+    A.check('wh-fullscreen-canvas-restores-exact',
+      c.canvas.width === canvasSizeBeforeFullscreen.w && c.canvas.height === canvasSizeBeforeFullscreen.h,
+      'before=' + JSON.stringify(canvasSizeBeforeFullscreen) +
+        ' after=' + c.canvas.width + 'x' + c.canvas.height);
 
     // 饼图等非笛卡尔图不挂工具条
     A.check('wh-pie-no-toolbar',
