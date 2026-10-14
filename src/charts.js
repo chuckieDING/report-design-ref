@@ -45,21 +45,60 @@ window.DS = window.DS || {};
   // 面积图（line + fill）的填充色需要是线条色的半透明版本，否则多条面积图
   // 叠在一起会互相完全遮挡（纯色块看不出谁在上谁在下）。tokens.css 里的
   // 颜色都是 6 位十六进制，这里只转换运行时从 CSS 变量读出来的值，不在源码
-  // 里写任何颜色字面量。alpha 固定给 0.28——离线算过 WCAG 相对亮度对比度
-  // （跟 demo.js selftest 用的是同一套公式）：六条分类序列色分别叠在浅色
-  // surface（#ffffff）和深色 surface（#18181b）上，0.22 在深色主题下部分
-  // 颜色的合成对比度会跌到 1.2 这条此前热力图最低档也用过的可见性下限
-  // 边缘；0.28 能让全部六条序列色在两套主题下都明显高于这条线，同时仍然
-  // 足够透明——两条面积图叠在一起不会完全互相遮挡。
-  var AREA_FILL_ALPHA = 0.28;
+  // 里写任何颜色字面量。
+  //
+  // alpha 取值的论证（复核修正版——上一版把浅/深两套主题的结论写反了）：
+  // 用 WCAG 相对亮度公式（跟 demo.js selftest、validate_palette.py 同一套）
+  // 把六条分类序列色分别按给定 alpha 合成到浅色 surface（#ffffff）和深色
+  // surface（#18181b）上，算合成色对各自背景的真实对比度，取两套主题下
+  // 各自的最小值（离线脚本独立复算过，数字可复现）：
+  //   alpha=0.22：浅色最低 1.158（s4 琥珀，已经跌破 1.2 这条此前热力图最低
+  //               档也用过的可见性下限）；深色最低 1.226（没有跌破）。
+  //   alpha=0.28：浅色最低 1.200（s4 琥珀，刚好卡在下限上，不是"明显高于"）；
+  //               深色最低 1.307。
+  //   alpha=0.34（现在用的值）：浅色最低 1.251；深色最低 1.416——两套主题
+  //               都有确定的余量，不再贴着下限走。
+  // 真正的短板始终在**浅色**主题（不是深色），短板颜色是 s4 琥珀（其次是
+  // s6 天蓝）——这两个本来就是偏亮的颜色，合成到接近纯白的背景上对比度
+  // 天花板不高：哪怕 alpha 推到 1.0（也就是完全不透明，不再是面积图的半
+  // 透明填充，是任意位置都在用的那个不透明序列色本身），s4 对纯白的 WCAG
+  // 对比度也只有 1.918。0.34 是"半透明叠加不互相遮挡"和"浅色主题下尽量
+  // 不贴着可见性下限"之间的折中，不能指望靠调高 alpha 把浅色这条短板完全
+  // 消除——这是色板本身的特性，不是这次改动引入的缺陷。换掉色板（README
+  // 明确鼓励使用者这么做）之后，这里的数字需要重新核算。
+  var AREA_FILL_ALPHA = 0.34;
+
+  // Chart.js 支持的全部"要填充"取值：true / 'origin' / 数字索引（相对另一
+  // 个 dataset 索引）/ 非 'false' 的字符串（'start'/'end'/'-1' 这类）/ 对象
+  // 写法 {target, above, below}（分别给填充区域上下两侧配不同颜色）。此前
+  // 漏判了对象写法——用这种写法的数据集 backgroundColor 仍然是不透明色，
+  // 正是这批要消灭的"实心色块互相遮挡"问题本身（复审实测复现）。
+  function isFillValue(fill) {
+    if (fill === true || fill === 'origin') return true;
+    if (typeof fill === 'number') return true;
+    if (typeof fill === 'string') return fill !== 'false';
+    if (fill && typeof fill === 'object') return true;
+    return false;
+  }
+
   function hexToRgba(hex, alpha) {
-    hex = String(hex).replace('#', '');
-    if (hex.length === 3) {
-      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    var raw = String(hex).replace('#', '');
+    if (raw.length === 3) {
+      raw = raw[0] + raw[0] + raw[1] + raw[1] + raw[2] + raw[2];
     }
-    var r = parseInt(hex.substr(0, 2), 16);
-    var g = parseInt(hex.substr(2, 2), 16);
-    var b = parseInt(hex.substr(4, 2), 16);
+    var r = parseInt(raw.substr(0, 2), 16);
+    var g = parseInt(raw.substr(2, 2), 16);
+    var b = parseInt(raw.substr(4, 2), 16);
+    if (isNaN(r) || isNaN(g) || isNaN(b)) {
+      // tokens.css 的颜色约定是 6 位十六进制，但 README 明确鼓励使用者替换
+      // 整套色板——如果换成了 rgb()/hsl()/颜色关键字这类非十六进制格式，
+      // 这里解析不出分量。与其静默产出一个带 NaN 的非法 rgba() 字符串
+      // （浏览器会判这条 CSS 属性整体无效，填充直接画不出来，且不抛错、
+      // 不告警，排查成本极高——复审实测复现过），不如放弃半透明、原样退回
+      // 调用方给的颜色字符串——面积图会退化成不透明色块（牺牲"多图叠加不
+      // 互相遮挡"这个次要效果），但图形本身不会凭空消失。
+      return String(hex);
+    }
     return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
   }
 
@@ -293,16 +332,39 @@ window.DS = window.DS || {};
         o.scales = o.scales || {};
         // Bug 3：双轴（量 + 率）组合图常见的第二数值轴通常叫 y1（跟
         // dataset.yAxisID 对应），此前这里写死 ['x', 'y']，y1 的网格/刻度/
-        // 轴线颜色从来没被注入过，切深色主题时会留在浅色。'x'/'y' 是任何
-        // 笛卡尔图默认都有的两根轴，哪怕调用方的 config.options.scales 里
-        // 完全没提（Chart.js 会隐式补全），所以继续无条件处理这两个——
-        // 这保住了此前的全部行为。调用方自己额外声明的轴（y1、以至于
-        // 任何将来出现的命名）从 o.scales 的实际 key 里读出来，并入同一套
-        // 注入循环；不区分类目轴以外的"类型"，因为这里能出现的只有类目轴
-        // （上面 categoryAxis 判定出的那一个，必然是 'x' 或 'y'）和数值轴
-        // 两种，数值轴统一走 else 分支（只上色，不截断标签），额外轴天然
-        // 落在这一类。
-        var axisNames = ['x', 'y'];
+        // 轴线颜色从来没被注入过，切深色主题时会留在浅色。调用方自己额外
+        // 声明的轴（y1、以至于任何将来出现的命名）从 o.scales 的实际 key
+        // 里读出来，并入同一套注入循环；不区分类目轴以外的"类型"，因为这里
+        // 能出现的只有类目轴（下面 categoryAxis 判定出的那一个，必然是
+        // 'x' 或 'y'）和数值轴两种，数值轴统一走 else 分支（只上色，不截断
+        // 标签），额外轴天然落在这一类。
+        //
+        // 幽灵轴（复审发现）：不能像上一版那样无条件把 'x'/'y' 都塞进
+        // axisNames——如果调用方的全部数据集都把 yAxisID 指到 'y1'（双轴图
+        // 常见写法：只用 y1 一根竖轴，压根不要默认的 'y'），这里仍然会强行
+        // `o.scales.y = o.scales.y || {}` 捏出一个空对象。Chart.js 一旦在
+        // options.scales 里看到 'y' 这个 key，哪怕没有任何 dataset 引用它，
+        // 也会真的实例化并绘制这根轴——没有数据可读，量程退化成默认的
+        // 0..1，一根跟真实数据毫无关系的幽灵轴就这样被画了出来（复审实测
+        // 复现；且因为它被当成"主轴"处理，不吃额外轴的 drawOnChartArea
+        // 默认规则，网格线照样画，比没有这根轴更容易误导人）。
+        //
+        // 修法：'x'/'y' 只有在真的被某个 dataset 引用时才强制创建；category
+        // 轴（上面 zoomAxisFor 判定出的那一个）例外——它是整张图"索引"维度
+        // 的载体，不依赖某个 dataset 显式指定 xAxisID/yAxisID，天然总是在用。
+        // 调用方自己在 o.scales 里显式声明过的轴（不管是不是 'x'/'y'）同样
+        // 保留，不因为"没有 dataset 引用"就被这条规则反过来删掉。
+        var datasetsForAxisCheck = config.data.datasets || [];
+        var usedAxisIds = {};
+        datasetsForAxisCheck.forEach(function (d) {
+          usedAxisIds[d.xAxisID || 'x'] = true;
+          usedAxisIds[d.yAxisID || 'y'] = true;
+        });
+        var otherDefaultAxis = categoryAxis === 'x' ? 'y' : 'x';
+        var axisNames = [categoryAxis];
+        if (usedAxisIds[otherDefaultAxis] || o.scales[otherDefaultAxis]) {
+          axisNames.push(otherDefaultAxis);
+        }
         Object.keys(o.scales).forEach(function (name) {
           if (axisNames.indexOf(name) === -1) axisNames.push(name);
         });
@@ -344,6 +406,31 @@ window.DS = window.DS || {};
             };
           }
         });
+      } else if (config.type === 'radar' || config.type === 'polarArea') {
+        // 雷达图和极区图共用 RadialLinearScale（默认轴名 'r'），既不是
+        // isCartesian()（没有 x/y 轴），也不该完全不注入——此前整个 else
+        // 分支是空的，'r' 轴的网格/角线/刻度/刻度背景色全部停留在 Chart.js
+        // 默认值：深色主题下，默认网格色 rgba(0,0,0,.1)、刻度文字默认 #666、
+        // 刻度数字背后还有一块默认 rgba(255,255,255,.75) 的白色背景块，叠在
+        // #18181b 的 surface 上几乎看不清（复审实测复现）。pie/doughnut 没有
+        // 任何坐标轴，继续不注入——isArc() 已经把它们的数据集着色单独处理。
+        o.scales = o.scales || {};
+        o.scales.r = o.scales.r || {};
+        var rs = o.scales.r;
+        rs.grid = rs.grid || {};
+        rs.grid.color = c.grid;
+        rs.angleLines = rs.angleLines || {};
+        rs.angleLines.color = c.grid;
+        rs.pointLabels = rs.pointLabels || {};
+        rs.pointLabels.color = c.text;
+        rs.ticks = rs.ticks || {};
+        rs.ticks.color = c.text;
+        // 'transparent' 不是色板里的一个颜色选择，是显式关掉 Chart.js 默认
+        // 给刻度数字垫的半透明白底——那块白底在深色主题下自己就是一块突兀
+        // 的亮斑，跟"源码无颜色字面量"这条约束管的东西（调用方用具体颜色
+        // 值表达设计意图）不是一回事：这里是关闭一个不受主题变量控制、且
+        // 和深色背景冲突的内置装饰。
+        rs.ticks.backdropColor = 'transparent';
       }
 
       var arc = isArc(config.type);
@@ -379,21 +466,18 @@ window.DS = window.DS || {};
           }
         } else {
           var color = c.series[i % c.series.length];
-          // 面积图（line + fill）：fill 为真值（true / 'origin' / 数字索引 /
-          // 非 'false' 的字符串，即 Chart.js 自己认可的全部 fill 取值）的
-          // 数据集，backgroundColor 要是线条色的半透明版本，不能跟普通折线/
-          // 柱状图一样给不透明色——不透明的话多条面积图叠在一起会变成互相
-          // 完全遮挡的实心色块，看不出谁在上谁在下。borderColor（线条本身、
-          // 图例描边）仍然是不透明的系列色，没有 fill 的数据集（普通折线、
-          // 柱状图）backgroundColor 也仍然是不透明色——这两类此前的行为
-          // 原样保留，只有"这个数据集类型是 line 且确实要填充"这一种情形走
-          // 半透明分支，per-dataset 判断（dataset.type 可以覆盖所属图表的
-          // config.type，混合图里同一个 chart 常见"面积 + 普通折线"共存）。
+          // 面积图（line + fill）：fill 是 Chart.js 自己认可的"要填充"取值
+          // （见 isFillValue()）的数据集，backgroundColor 要是线条色的半
+          // 透明版本，不能跟普通折线/柱状图一样给不透明色——不透明的话多条
+          // 面积图叠在一起会变成互相完全遮挡的实心色块，看不出谁在上谁在下。
+          // borderColor（线条本身、图例描边）仍然是不透明的系列色，没有
+          // fill 的数据集（普通折线、柱状图）backgroundColor 也仍然是不
+          // 透明色——这两类此前的行为原样保留，只有"这个数据集类型是 line
+          // 且确实要填充"这一种情形走半透明分支，per-dataset 判断
+          // （dataset.type 可以覆盖所属图表的 config.type，混合图里同一个
+          // chart 常见"面积 + 普通折线"共存）。
           var dsType = d.type || config.type;
-          var isFilledLine = dsType === 'line' &&
-            (d.fill === true || d.fill === 'origin' ||
-             typeof d.fill === 'number' ||
-             (typeof d.fill === 'string' && d.fill !== 'false'));
+          var isFilledLine = dsType === 'line' && isFillValue(d.fill);
           // __dsAutoBg/__dsAutoBorder 的拆分理由同上面弧形族分支。
           if (d.backgroundColor == null || d.__dsAutoBg) {
             d.backgroundColor = isFilledLine ? hexToRgba(color, AREA_FILL_ALPHA) : color;

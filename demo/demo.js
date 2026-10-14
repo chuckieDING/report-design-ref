@@ -70,10 +70,6 @@
     hex = String(hex).replace('#', '');
     return { r: parseInt(hex.substr(0, 2), 16), g: parseInt(hex.substr(2, 2), 16), b: parseInt(hex.substr(4, 2), 16) };
   }
-  function rgbToHex(r, g, b) {
-    function h(n) { var s = Math.round(n).toString(16); return s.length < 2 ? '0' + s : s; }
-    return '#' + h(r) + h(g) + h(b);
-  }
 
   // 双轴组合图 y1 的 grid/ticks/border 是否真的被 paint() 注入了当前主题色——
   // 'charts' 和 'reportCharts' 两套断言套件都要用，提到外层共享，不各写一份。
@@ -1920,18 +1916,82 @@
       /^#[0-9a-f]{6}$/i.test(areaPlainBg) && parseRgba(areaPlainBg) === null,
       'got ' + areaPlainBg);
 
+    // 复审发现：fill 的对象写法 {target, above, below}（Chart.js 官方支持，
+    // 分别给填充区域上下两侧配不同颜色）没有被 isFilledLine 识别，这种写法
+    // 下 backgroundColor 此前仍是不透明色——正是这批要消灭的"实心色块互相
+    // 遮挡"问题本身。
+    var fillObjectHost = document.createElement('div');
+    fillObjectHost.className = 'ds-chart-host';
+    var fillObjectCanvas = document.createElement('canvas');
+    fillObjectHost.appendChild(fillObjectCanvas);
+    document.body.appendChild(fillObjectHost);
+    var fillObjectChart = DS.charts.create(fillObjectCanvas, {
+      type: 'line',
+      data: {
+        labels: ['一', '二'],
+        datasets: [{ label: 'X', data: [1, 2], fill: { target: 'origin' } }]
+      }
+    });
+    var fillObjectBg = parseRgba(fillObjectChart.data.datasets[0].backgroundColor);
+    A.check('ch-area-fill-object-form-recognized',
+      !!fillObjectBg && fillObjectBg.a > 0 && fillObjectBg.a < 1,
+      'got ' + fillObjectChart.data.datasets[0].backgroundColor);
+    DS.charts.destroy(fillObjectChart);
+    fillObjectHost.remove();
+
+    // 复审发现：hexToRgba() 硬假设 token 是十六进制；README 明确鼓励使用者
+    // 替换整套色板，换成 rgb()/hsl() 这类非十六进制格式时，此前会静默产出
+    // 一条带 NaN 的非法 rgba() 字符串（浏览器判这条属性整体无效，填充直接
+    // 画不出来，不抛错不告警）。覆盖 --chart-s1 成非十六进制值，验证现在
+    // 会退回调用方给的颜色字符串本身（不透明，牺牲半透明效果但图形还在），
+    // 而不是产出带 NaN 的垃圾值。用完立刻把覆盖去掉，不能让它泄漏给后面
+    // 任何依赖 --chart-s1 真实色值的断言（包括这个套件稍后可能触发的
+    // retheme）。
+    document.documentElement.style.setProperty('--chart-s1', 'rgb(1, 2, 3)');
+    var nonHexHost = document.createElement('div');
+    nonHexHost.className = 'ds-chart-host';
+    var nonHexCanvas = document.createElement('canvas');
+    nonHexHost.appendChild(nonHexCanvas);
+    document.body.appendChild(nonHexHost);
+    var nonHexChart = DS.charts.create(nonHexCanvas, {
+      type: 'line',
+      data: { labels: ['一', '二'], datasets: [{ label: 'X', data: [1, 2], fill: true }] }
+    });
+    var nonHexBg = nonHexChart.data.datasets[0].backgroundColor;
+    A.check('ch-area-fallback-on-nonhex-token',
+      nonHexBg === 'rgb(1, 2, 3)' && nonHexBg.indexOf('NaN') === -1,
+      'got ' + nonHexBg);
+    document.documentElement.style.removeProperty('--chart-s1');
+    DS.charts.destroy(nonHexChart);
+    nonHexHost.remove();
+
     // 半透明填充在深浅两套主题下都要跟背景有可感知的对比度（WCAG 相对亮度
     // 公式，跟热力图 svg-heatmap-min-opacity-visible-* 用的是同一套），
     // 不是只判 alpha > 0——那对"是否肉眼可见"没有鉴别力。
+    //
+    // 复审发现：上一版只采样 datasets[0]（s1 蓝）一条颜色，而 s1 恰好是
+    // 浅色主题下对比度第二好的一条——用它单独代表"六条序列色都够用"对
+    // s4 琥珀这类偏亮的颜色完全没有鉴别力（变异验证过：把 alpha 调回 0.22
+    // 甚至 0.18，这条断言照样全绿，因为被测的从来不是最差的那条颜色）。
+    // 改成遍历 DS.charts.themeColors().series 全部六条，各自合成后取对比度
+    // 最小值——alpha 从真实渲染出来的 areaChart.data.datasets[0].backgroundColor
+    // 里读（不在测试里重新硬编一份 AREA_FILL_ALPHA 的数字，src/charts.js
+    // 改了这个值的话测试自动跟着用新值，不会出现"测试和实现各算各的、
+    // 两边恰好对不上也测不出来"的情况）。
     var themeBeforeAreaContrast = DS.theme.get();
     ['light', 'dark'].forEach(function (themeName) {
       DS.theme.set(themeName);
       var bg = getComputedStyle(document.documentElement).getPropertyValue('--color-surface').trim();
       var fillRgba = parseRgba(areaChart.data.datasets[0].backgroundColor);
-      var compositeHex = compositeOverBg(rgbToHex(fillRgba.r, fillRgba.g, fillRgba.b), bg, fillRgba.a);
-      var cr = hexContrast(compositeHex, bg);
-      A.check('ch-area-fill-visible-contrast-' + themeName, cr >= 1.2,
-        'composite=' + compositeHex + ' bg=' + bg + ' contrast=' + cr.toFixed(3));
+      var seriesColors = DS.charts.themeColors().series;
+      var perColorContrast = seriesColors.map(function (hex) {
+        var compositeHex = compositeOverBg(hex, bg, fillRgba.a);
+        return hexContrast(compositeHex, bg);
+      });
+      var minContrast = Math.min.apply(null, perColorContrast);
+      A.check('ch-area-fill-visible-contrast-' + themeName, minContrast >= 1.2,
+        'alpha=' + fillRgba.a + ' minContrast=' + minContrast.toFixed(3) +
+          ' perColor=' + perColorContrast.map(function (v) { return v.toFixed(3); }).join(',') + ' bg=' + bg);
     });
     DS.theme.set(themeBeforeAreaContrast);
 
@@ -1980,6 +2040,110 @@
     var ymdFn = DS.charts.dateTicks('ymd');
     A.check('ch-datetics-ymd-format',
       ymdFn(Date.UTC(2024, 11, 31)) === '2024-12-31', 'got ' + ymdFn(Date.UTC(2024, 11, 31)));
+
+    // ---------------- 幽灵轴（复审发现的既有问题）----------------
+    // 全部数据集都把 yAxisID 指到 'y1'（双轴图里只要一根竖轴的常见写法），
+    // 不该凭空造出一根没人用的 'y' 轴——这根幽灵轴会被 Chart.js 真的实例化
+    // 并绘制，量程退化成默认的 0..1，且会被当成"主轴"画网格线（不吃额外轴
+    // 的 drawOnChartArea 默认规则），比没有这根轴更容易误导人。
+    var ghostAxisHost = document.createElement('div');
+    ghostAxisHost.className = 'ds-chart-host';
+    var ghostAxisCanvas = document.createElement('canvas');
+    ghostAxisHost.appendChild(ghostAxisCanvas);
+    document.body.appendChild(ghostAxisHost);
+    var ghostAxisChart = DS.charts.create(ghostAxisCanvas, {
+      type: 'line',
+      data: {
+        labels: ['一', '二'],
+        datasets: [{ label: 'X', data: [1, 2], yAxisID: 'y1' }]
+      },
+      options: { scales: { y1: { position: 'right' } } }
+    });
+    A.check('ch-no-ghost-y-axis-when-only-y1-used',
+      !ghostAxisChart.scales.y && !ghostAxisChart.options.scales.y,
+      'scales keys: ' + Object.keys(ghostAxisChart.options.scales).join(','));
+    A.check('ch-ghost-axis-case-y1-still-themed',
+      ghostAxisChart.options.scales.y1.grid.color === DS.charts.themeColors().grid, '');
+    DS.charts.destroy(ghostAxisChart);
+    ghostAxisHost.remove();
+
+    // 反例：调用方自己显式声明过的轴（哪怕没有 dataset 引用）要保留，不能
+    // 被这条"没人用就不创建"的规则反过来误伤——这是调用方故意要一条纯装饰
+    // 轴线的合法用法。
+    var explicitAxisHost = document.createElement('div');
+    explicitAxisHost.className = 'ds-chart-host';
+    var explicitAxisCanvas = document.createElement('canvas');
+    explicitAxisHost.appendChild(explicitAxisCanvas);
+    document.body.appendChild(explicitAxisHost);
+    var explicitAxisChart = DS.charts.create(explicitAxisCanvas, {
+      type: 'line',
+      data: {
+        labels: ['一', '二'],
+        datasets: [{ label: 'X', data: [1, 2], yAxisID: 'y1' }]
+      },
+      options: { scales: { y: { display: false }, y1: { position: 'right' } } }
+    });
+    A.check('ch-explicit-unused-axis-not-deleted',
+      !!explicitAxisChart.options.scales.y, 'got ' + JSON.stringify(explicitAxisChart.options.scales.y));
+    DS.charts.destroy(explicitAxisChart);
+    explicitAxisHost.remove();
+
+    // ---------------- 雷达图 / 极区图的 'r' 轴主题注入（既有问题）----------------
+    // 此前 paint() 对非笛卡尔图整个跳过，radar/polarArea 共用的
+    // RadialLinearScale（默认轴名 'r'）从来没拿到过主题色：深色主题下网格/
+    // 角线仍是 Chart.js 默认的浅色、刻度文字默认深灰、刻度数字背后还有一块
+    // 默认半透明白底，在深色 surface 上都很突兀。
+    var radarHost = document.createElement('div');
+    radarHost.className = 'ds-chart-host';
+    var radarCanvas = document.createElement('canvas');
+    radarHost.appendChild(radarCanvas);
+    document.body.appendChild(radarHost);
+    var radarChart = DS.charts.create(radarCanvas, {
+      type: 'radar',
+      data: {
+        labels: ['速度', '稳定性', '准确率'],
+        datasets: [{ label: '仪器甲', data: [8, 6, 9] }]
+      }
+    });
+    var radarThemeNow = DS.charts.themeColors();
+    var rScale = radarChart.options.scales.r;
+    A.check('ch-radar-r-grid-themed', rScale.grid.color === radarThemeNow.grid, 'got ' + rScale.grid.color);
+    A.check('ch-radar-r-angle-lines-themed',
+      rScale.angleLines.color === radarThemeNow.grid, 'got ' + rScale.angleLines.color);
+    A.check('ch-radar-r-point-labels-themed',
+      rScale.pointLabels.color === radarThemeNow.text, 'got ' + rScale.pointLabels.color);
+    A.check('ch-radar-r-ticks-themed', rScale.ticks.color === radarThemeNow.text, 'got ' + rScale.ticks.color);
+    A.check('ch-radar-r-ticks-backdrop-transparent',
+      rScale.ticks.backdropColor === 'transparent', 'got ' + rScale.ticks.backdropColor);
+
+    DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+    var radarThemeAfter = DS.charts.themeColors();
+    A.check('ch-radar-r-grid-tracks-theme',
+      radarChart.options.scales.r.grid.color === radarThemeAfter.grid &&
+        radarChart.options.scales.r.grid.color !== rScale.grid.color,
+      'before=' + rScale.grid.color + ' after=' + radarChart.options.scales.r.grid.color);
+    DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+
+    // polarArea 同样用 'r' 轴，且同时是 isArc() 成员（扇区按数据点数组着色）
+    // ——两条路径要同时生效，不能因为被归到 arc 就又跳过 r 轴注入。
+    var polarHost = document.createElement('div');
+    polarHost.className = 'ds-chart-host';
+    var polarCanvas = document.createElement('canvas');
+    polarHost.appendChild(polarCanvas);
+    document.body.appendChild(polarHost);
+    var polarChart = DS.charts.create(polarCanvas, {
+      type: 'polarArea',
+      data: { labels: ['甲', '乙', '丙'], datasets: [{ data: [3, 5, 2] }] }
+    });
+    A.check('ch-polararea-r-grid-themed',
+      polarChart.options.scales.r.grid.color === DS.charts.themeColors().grid, '');
+    A.check('ch-polararea-still-gets-arc-colors',
+      Array.isArray(polarChart.data.datasets[0].backgroundColor) &&
+        polarChart.data.datasets[0].backgroundColor.length === 3, '');
+    DS.charts.destroy(radarChart);
+    DS.charts.destroy(polarChart);
+    radarHost.remove();
+    polarHost.remove();
 
     document.querySelector('[data-panel="p-play"]').click();
   });
