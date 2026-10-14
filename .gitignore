@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+_render/
+# 本地去标识化词表补充；绝不提交，见 .denylist.local.example
+.denylist.local
+# build 产物（中间文件）；demo/index.html、starter/index.html 这些源模板，
+# 以及根目录 /index.html（GitHub Pages 入口，由 build.py demo 与 demo.html
+# 同步产出，必须提交）都不在此列。
+/demo.html
+/starter.html

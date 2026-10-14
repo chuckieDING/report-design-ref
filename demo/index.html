@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>report-design-ref — 报表设计参考库</title>
+<script>
+// 测试钩子：?nostorage=1 模拟隐私模式 / file:// 下 localStorage 被禁用
+if (new URLSearchParams(location.search).get('nostorage') === '1') {
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    get: function () { throw new DOMException('denied', 'SecurityError'); }
+  });
+}
+</script>
+<style>
+/*__TOKENS__*/
+/*__COMPONENTS__*/
+</style>
+</head>
+<body>
+<div id="app"></div>
+<pre id="selftest-result" hidden>PENDING</pre>
+<script>/*__VENDOR__*/</script>
+<script>/*__INTERACTIONS__*/</script>
+<script>/*__CHARTS__*/</script>
+<script>/*__CHARTS_SVG__*/</script>
+<script>/*__PAGE_JS__*/</script>
+</body>
+</html>

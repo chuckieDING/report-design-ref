@@ -1,0 +1,142 @@
+/* tokens.css — 设计令牌契约。后续所有任务只许引用这里定义的变量名。
+   色板已用 validate_palette.py 实测校验：
+     - 文本/背景组合满足 WCAG AA（正文 4.5:1，大字与非文本 UI 3:1）
+     - 六个图表序列色两两满足 ΔE(OKLab) 正常视觉 >=15、色觉障碍模拟(protan/deutan/tritan) >=6
+   详见仓库根目录 palette.md 的实测记录。
+
+   --color-primary/success/warning/danger 四个 token 只承担「填充/边框/图表」这一种用途
+   （门槛 3:1）——按钮底色、卡片 hover 边框、图表系列色都直接用它们，不能为了小字可读性
+   把它们整体加深，否则所有这些场景都会被拖暗。
+   凡是「浅底徽标/提示条背景」与「贴在浅底或 surface 上的小字」（如 .ds-badge、
+   .ds-stat-delta）两种更高门槛的用途，改用下面新增的 *-tint（非文本门槛）与
+   *-ink（>=4.5，success/danger 的 ink 额外要求在 surface 上也 >=4.5）。 */
+
+:root {
+  --color-primary: #2563eb;
+  --color-primary-light: #3b82f6;
+  --color-primary-dark: #1d4ed8;
+  --color-accent: #7c3aed;
+  --color-success: #059669;
+  --color-warning: #d97706;      /* 实测 on #ffffff = 3.19，已达 AA_LARGE(3.0)，填充/边框/图表用途无需加深；
+                                     小字场景(badge/stat-delta)改用 --color-warning-ink，见下 */
+  --color-danger: #dc2626;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f8fafc;
+  --color-surface-hover: #f1f5f9;
+  --color-border: #e2e8f0;
+
+  /* 浅底徽标/提示条背景：原色以 12% 不透明度叠在 --color-surface(#ffffff) 上的合成结果，
+     写死成静态 hex（不用 rgba，避免和未来改动的基色失同步，也方便 validate_palette.py 直接读取）。
+     非文本背景色，没有独立的对比度门槛。 */
+  --color-primary-tint: #e5ecfd;
+  --color-success-tint: #e1f2ed;
+  --color-warning-tint: #faefe1;
+  --color-danger-tint: #fbe5e5;
+
+  /* 浅底徽标文字 / .ds-stat-delta 等小字专用：同色相、只压明度，
+     要求 on 对应 -tint >= 4.5；success/danger 额外要求 on --color-surface 也 >= 4.5
+     （.ds-stat-delta 直接贴 surface）。实测见 palette.md。 */
+  --color-primary-ink: #1d4ed8;
+  --color-success-ink: #047857;
+  --color-warning-ink: #9f5704;  /* 2026-10-14 审查：原 #92400e on tint 实测 6.25，比同排 primary(5.66)/
+                                     success(4.73)/danger(5.37) 明显偏棕、视觉不一致；改用 #9f5704
+                                     （on tint 4.82，margin 0.32），同色相(amber)仅调回与其余三色同量级 */
+  --color-danger-ink: #b91c1c;
+  --color-text: #1e293b;
+  --color-text-secondary: #64748b;
+  --color-text-muted: #62738f;   /* 自 #94a3b8 加深：原值 on #ffffff = 2.56，远低于 AA_NORMAL(4.5)。
+                                     同色相(slate)逐级插值找到的最接近原值且 >=4.5 的档位，实测 4.81 */
+  /* 2026-10-14 审查（Review D5）：--color-border（#e2e8f0）on --color-surface
+     仅 1.23:1，远低于 WCAG 1.4.11 对非文本 UI 边界的 3:1 门槛——.ds-btn.secondary
+     （背景与所在卡片同色，唯一视觉边界就是这条边框）和 .ds-dropzone 的虚线边框
+     都靠它才能被辨认出轮廓。新增这个专用 token 而不是直接改深 --color-border
+     本身：它还用在表格分隔线、卡片/导航边框等纯装饰场景，那些地方 3:1 不是
+     必需、改深了反而显得过重。直接复用已验算过的 --color-text-muted 同色值
+     （4.81，远超 3:1 门槛），不再新调一个未经验证的颜色。 */
+  --color-border-strong: #62738f;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -2px rgba(0,0,0,0.05);
+  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.04);
+  --shadow-xl: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.06);
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 图表专用：栅格线/坐标轴为装饰与刻度文本 */
+  --chart-grid: #e2e8f0;
+  --chart-axis: #62738f;         /* 原值 #94a3b8 同样只有 2.56，刻度数字是真文本，按 AA_NORMAL 一并修正 */
+
+  /* 六条分类序列色：浅/深主题刻意使用同一组色值（见 palette.md 的取舍说明），
+     角色固定为 s1 主色系 / s2 暖色 / s3 绿 / s4 琥珀 / s5 紫 / s6 青。
+     已用 delta_e() 验算全部 15 组两两组合，正常视觉与三种色觉障碍模拟均达标。 */
+  --chart-s1: #0072b2;
+  --chart-s2: #d55e00;
+  --chart-s3: #009e73;
+  --chart-s4: #eab308;
+  --chart-s5: #a855f7;
+  --chart-s6: #56b4e9;
+}
+
+[data-theme="dark"] {
+  --color-primary: #818cf8;
+  --color-primary-light: #a5b4fc;
+  --color-primary-dark: #6366f1;
+  --color-accent: #c084fc;
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-danger: #f87171;
+  --color-surface: #18181b;
+  --color-surface-alt: #09090b;
+  --color-surface-hover: #27272a;
+  --color-border: #3f3f46;
+
+  /* 浅底徽标/提示条背景（深色主题里其实是「稍微提亮的深底」）：
+     原色以 12% 不透明度叠在 --color-surface(#18181b) 上的合成结果，静态 hex。 */
+  --color-primary-tint: #252636;
+  --color-success-tint: #1e3027;
+  --color-warning-tint: #332c1c;
+  --color-danger-tint: #332325;
+
+  /* 深色主题四个基色本身 on 对应 tint（以及 success/danger on surface）实测已经 >= 4.5，
+     无需额外加深，ink 直接复用基色值（同色相、同明度）。 */
+  --color-primary-ink: #818cf8;
+  --color-success-ink: #4ade80;
+  --color-warning-ink: #fbbf24;
+  --color-danger-ink: #f87171;
+  --color-text: #fafafa;
+  --color-text-secondary: #d4d4d8;
+  --color-text-muted: #a1a1aa;
+  /* 同上（Review D5）：深色下 --color-border（#3f3f46）on --color-surface
+     仅 1.70:1，同样复用已验算过的 --color-text-muted 同色值（6.91）。 */
+  --color-border-strong: #a1a1aa;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.5), 0 2px 4px -2px rgba(0,0,0,0.4);
+  --shadow-lg: 0 10px 25px -3px rgba(0,0,0,0.6), 0 4px 6px -4px rgba(0,0,0,0.4);
+  --shadow-xl: 0 20px 40px -5px rgba(0,0,0,0.7), 0 8px 16px -6px rgba(0,0,0,0.5);
+
+  --chart-grid: #27272a;
+  --chart-axis: #a1a1aa;         /* 原值 #52525b on #18181b 仅 2.29，改用深色 text-muted 同值，实测 6.91 */
+
+  /* 分类序列色与浅色主题相同（见 palette.md）：曾尝试整体提亮成 400 色阶的柔和版本，
+     但多组 ΔE 在色觉障碍模拟下塌缩（如 s1-s6<7、s3-s6<5），故保留同一组已验算通过的色值。
+     on 深色背景 (#18181b) 的非文本对比度实测 3.42–9.24，均 >= 3:1。 */
+  --chart-s1: #0072b2;
+  --chart-s2: #d55e00;
+  --chart-s3: #009e73;
+  --chart-s4: #eab308;
+  --chart-s5: #a855f7;
+  --chart-s6: #56b4e9;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+  font: 400 14px/1.6 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
