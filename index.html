@@ -676,6 +676,19 @@ window.DS = window.DS || {};
     return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
   }
 
+  // 工具条（放大/缩小/复位/全屏）用 position:absolute 悬浮在宿主右上角，
+  // 按钮 22px 高、顶部偏移 4px（见 components.css .ds-chart-toolbar /
+  // .ds-chart-btn）。Chart.js 默认把图例画在画布最顶上，多数据集图表的
+  // 图例一旦够宽，最右边的条目会被工具条整个盖住（复审实测：三项图例的
+  // 堆叠柱状图，第三项"设备C"被压得只剩"设备"二字，深浅主题都复现）。
+  // 此前没暴露是因为这批之前所有笛卡尔图的图例都只有 1 项，不会伸到右上
+  // 角。这是通用问题——所有笛卡尔图都挂同一个工具条，不是某一张图单独的
+  // 毛病，所以在库层面用 layout.padding.top 给"图例 + 绘图区"这整块内容
+  // 统一让出一段顶部留白，工具条的落点完全在这段留白里，不管图例有几项、
+  // 多宽都不会被压住。30px 留了几像素余量（22+4=26）。只在调用方没有自己
+  // 配置 layout.padding.top 时才补这个默认值，见 paint() 里的用法。
+  var TOOLBAR_TOP_RESERVE = 30;
+
   // entry.chart.canvas 在 chart.destroy() 后会被 Chart.js 置为 null，
   // 用它判断实例是否还活着；registry 里 destroy 之后的死实例要物理摘除，
   // 否则 entry 会一直强引用 Chart 实例 + 原始 config（连带整份 dataset）不释放。
@@ -863,6 +876,13 @@ window.DS = window.DS || {};
       // pie/doughnut/polarArea/radar 没有 x/y 轴，硬塞 scales.x/scales.y 会在
       // 弧形图上画出幽灵坐标轴、把 chartArea 挤歪。只有真正的笛卡尔系图表才注入。
       if (isCartesian(config.type)) {
+        // 见 TOOLBAR_TOP_RESERVE 定义处的注释：给工具条让出顶部空间，避免
+        // 压住多数据集图表的图例。只在调用方没有自己配置
+        // layout.padding.top 时才补这个默认值。
+        o.layout = o.layout || {};
+        o.layout.padding = o.layout.padding || {};
+        if (o.layout.padding.top == null) o.layout.padding.top = TOOLBAR_TOP_RESERVE;
+
         // crosshair：Chart.js 内置的 index 模式足够——鼠标不必精确落在数据点
         // 上（intersect:false）就能联动高亮同一索引下的所有系列，不需要额外
         // 插件。只在调用方没有自己配置时才注入默认值（Review M2）：
@@ -2155,7 +2175,22 @@ window.DS_MOCK = (function () {
     },
     options: {
       scales: {
-        x: { type: 'linear', ticks: { callback: DS.charts.dateTicks('md') } }
+        // Bug（复审线上实测）：不钉 min/max 的话，Chart.js 对线性轴的默认
+        // "好看刻度"算法会自己找一圈整数，第一个刻度常常落在数据起点
+        // *之前*（实测 14 天数据从 2024-01-01 开始，轴上却先画一个
+        // "12/31"），刻度间距也不保证踩在整天上，天数少的时候甚至会连续
+        // 出现好几个同一天的重复标签（3 天数据实测过"1/1"连续出现 4 次）。
+        // min/max 钉死到数据域本身、ticks.stepSize 固定成一天的毫秒数、
+        // maxTicksLimit 控制密度，三者一起用才能保证刻度不越界、不重复——
+        // 这是本仓库数值轴模拟时间轴这套方案真正的局限（不是简单的"疏密
+        // 取舍"），README「时间轴」一节已经补充说明，任何用这个方案的调用
+        // 方都要记得自己设这三项，不设的话会复现这个 bug。
+        x: {
+          type: 'linear',
+          min: timeaxisDates[0],
+          max: timeaxisDates[timeaxisDates.length - 1],
+          ticks: { stepSize: 86400000, maxTicksLimit: 7, callback: DS.charts.dateTicks('md') }
+        }
       }
     }
   });
@@ -3331,6 +3366,21 @@ window.DS_MOCK = (function () {
     A.check('ch-stacked-legend-count', stackedLegendItems.length === 3,
       'got ' + stackedLegendItems.length);
 
+    // 线上可见的破损（复审实测）：三项图例的这张堆叠柱，图例第三项"设备C"
+    // 曾经被 .ds-chart-toolbar（position:absolute，悬浮在宿主右上角）整个
+    // 压住，深浅主题都复现——单项图例的既有图表从没暴露过这个问题。真正
+    // 验证"不再被压住"要用两边的真实几何位置比较，不是回读配置回声：工具条
+    // 在 DOM 里的 getBoundingClientRect() 相对画布顶部的下边缘，必须不晚于
+    // Chart.js 布局引擎真实算出来的图例顶边（chart.legend.top，Chart.js 的
+    // 布局阶段算完之后才有这个值，不是我们自己拍的数字）。
+    var stackedToolbarEl = stackedChart.canvas.parentNode.querySelector('.ds-chart-toolbar');
+    var stackedToolbarRect = stackedToolbarEl.getBoundingClientRect();
+    var stackedCanvasRect = stackedChart.canvas.getBoundingClientRect();
+    var stackedToolbarBottomRelToCanvas = stackedToolbarRect.bottom - stackedCanvasRect.top;
+    A.check('ch-stacked-legend-not-covered-by-toolbar',
+      stackedChart.legend.top >= stackedToolbarBottomRelToCanvas,
+      'legend.top=' + stackedChart.legend.top + ' toolbarBottom=' + stackedToolbarBottomRelToCanvas);
+
     // 真正验证"堆叠"本身：最上面一段柱子的顶部像素，应该落在"三段累加值"
     // 对应的像素位置，而不是它自己的值单独从 0 起算的位置——这是
     // scales.x/y.stacked:true 真正生效的可观察后果，不是只回读配置echo。
@@ -3431,6 +3481,25 @@ window.DS_MOCK = (function () {
     var timeaxisTicksFormatted = timeaxisTickLabels.length > 0 &&
       timeaxisTickLabels.every(function (s) { return /^\d{1,2}\/\d{1,2}$/.test(s); });
     A.check('ch-timeaxis-ticks-formatted', timeaxisTicksFormatted,
+      'got ' + timeaxisTickLabels.join(','));
+
+    // 复审线上实测过的破损：不钉 min/max 时第一个刻度会落在数据起点之前，
+    // 数据点少的时候刻度还会连续重复同一天。读 Chart.js 真实算出来的刻度
+    // 值（而不是重新实现一遍"应该长什么样"），核对每个刻度的时间戳都落在
+    // 数据域 [timeaxisDates[0], timeaxisDates[末尾]] 以内，且格式化后的标签
+    // 字符串两两不重复。
+    var timeaxisDataMin = timeaxisDates[0];
+    var timeaxisDataMax = timeaxisDates[timeaxisDates.length - 1];
+    var timeaxisTickValues = timeaxisChart.scales.x.ticks.map(function (t) { return t.value; });
+    var timeaxisTicksWithinRange = timeaxisTickValues.length > 0 &&
+      timeaxisTickValues.every(function (v) { return v >= timeaxisDataMin && v <= timeaxisDataMax; });
+    A.check('ch-timeaxis-ticks-within-data-range', timeaxisTicksWithinRange,
+      'dataRange=[' + timeaxisDataMin + ',' + timeaxisDataMax + '] got ' + timeaxisTickValues.join(','));
+
+    var timeaxisUniqueLabels = {};
+    timeaxisTickLabels.forEach(function (l) { timeaxisUniqueLabels[l] = true; });
+    A.check('ch-timeaxis-ticks-no-duplicate-labels',
+      Object.keys(timeaxisUniqueLabels).length === timeaxisTickLabels.length,
       'got ' + timeaxisTickLabels.join(','));
 
     var timeaxisBefore = { min: timeaxisChart.scales.x.min, max: timeaxisChart.scales.x.max };

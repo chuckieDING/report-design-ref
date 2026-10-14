@@ -63,6 +63,19 @@ window.DS = window.DS || {};
     return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
   }
 
+  // 工具条（放大/缩小/复位/全屏）用 position:absolute 悬浮在宿主右上角，
+  // 按钮 22px 高、顶部偏移 4px（见 components.css .ds-chart-toolbar /
+  // .ds-chart-btn）。Chart.js 默认把图例画在画布最顶上，多数据集图表的
+  // 图例一旦够宽，最右边的条目会被工具条整个盖住（复审实测：三项图例的
+  // 堆叠柱状图，第三项"设备C"被压得只剩"设备"二字，深浅主题都复现）。
+  // 此前没暴露是因为这批之前所有笛卡尔图的图例都只有 1 项，不会伸到右上
+  // 角。这是通用问题——所有笛卡尔图都挂同一个工具条，不是某一张图单独的
+  // 毛病，所以在库层面用 layout.padding.top 给"图例 + 绘图区"这整块内容
+  // 统一让出一段顶部留白，工具条的落点完全在这段留白里，不管图例有几项、
+  // 多宽都不会被压住。30px 留了几像素余量（22+4=26）。只在调用方没有自己
+  // 配置 layout.padding.top 时才补这个默认值，见 paint() 里的用法。
+  var TOOLBAR_TOP_RESERVE = 30;
+
   // entry.chart.canvas 在 chart.destroy() 后会被 Chart.js 置为 null，
   // 用它判断实例是否还活着；registry 里 destroy 之后的死实例要物理摘除，
   // 否则 entry 会一直强引用 Chart 实例 + 原始 config（连带整份 dataset）不释放。
@@ -250,6 +263,13 @@ window.DS = window.DS || {};
       // pie/doughnut/polarArea/radar 没有 x/y 轴，硬塞 scales.x/scales.y 会在
       // 弧形图上画出幽灵坐标轴、把 chartArea 挤歪。只有真正的笛卡尔系图表才注入。
       if (isCartesian(config.type)) {
+        // 见 TOOLBAR_TOP_RESERVE 定义处的注释：给工具条让出顶部空间，避免
+        // 压住多数据集图表的图例。只在调用方没有自己配置
+        // layout.padding.top 时才补这个默认值。
+        o.layout = o.layout || {};
+        o.layout.padding = o.layout.padding || {};
+        if (o.layout.padding.top == null) o.layout.padding.top = TOOLBAR_TOP_RESERVE;
+
         // crosshair：Chart.js 内置的 index 模式足够——鼠标不必精确落在数据点
         // 上（intersect:false）就能联动高亮同一索引下的所有系列，不需要额外
         // 插件。只在调用方没有自己配置时才注入默认值（Review M2）：

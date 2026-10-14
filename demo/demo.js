@@ -538,7 +538,22 @@
     },
     options: {
       scales: {
-        x: { type: 'linear', ticks: { callback: DS.charts.dateTicks('md') } }
+        // Bug（复审线上实测）：不钉 min/max 的话，Chart.js 对线性轴的默认
+        // "好看刻度"算法会自己找一圈整数，第一个刻度常常落在数据起点
+        // *之前*（实测 14 天数据从 2024-01-01 开始，轴上却先画一个
+        // "12/31"），刻度间距也不保证踩在整天上，天数少的时候甚至会连续
+        // 出现好几个同一天的重复标签（3 天数据实测过"1/1"连续出现 4 次）。
+        // min/max 钉死到数据域本身、ticks.stepSize 固定成一天的毫秒数、
+        // maxTicksLimit 控制密度，三者一起用才能保证刻度不越界、不重复——
+        // 这是本仓库数值轴模拟时间轴这套方案真正的局限（不是简单的"疏密
+        // 取舍"），README「时间轴」一节已经补充说明，任何用这个方案的调用
+        // 方都要记得自己设这三项，不设的话会复现这个 bug。
+        x: {
+          type: 'linear',
+          min: timeaxisDates[0],
+          max: timeaxisDates[timeaxisDates.length - 1],
+          ticks: { stepSize: 86400000, maxTicksLimit: 7, callback: DS.charts.dateTicks('md') }
+        }
       }
     }
   });
@@ -1714,6 +1729,21 @@
     A.check('ch-stacked-legend-count', stackedLegendItems.length === 3,
       'got ' + stackedLegendItems.length);
 
+    // 线上可见的破损（复审实测）：三项图例的这张堆叠柱，图例第三项"设备C"
+    // 曾经被 .ds-chart-toolbar（position:absolute，悬浮在宿主右上角）整个
+    // 压住，深浅主题都复现——单项图例的既有图表从没暴露过这个问题。真正
+    // 验证"不再被压住"要用两边的真实几何位置比较，不是回读配置回声：工具条
+    // 在 DOM 里的 getBoundingClientRect() 相对画布顶部的下边缘，必须不晚于
+    // Chart.js 布局引擎真实算出来的图例顶边（chart.legend.top，Chart.js 的
+    // 布局阶段算完之后才有这个值，不是我们自己拍的数字）。
+    var stackedToolbarEl = stackedChart.canvas.parentNode.querySelector('.ds-chart-toolbar');
+    var stackedToolbarRect = stackedToolbarEl.getBoundingClientRect();
+    var stackedCanvasRect = stackedChart.canvas.getBoundingClientRect();
+    var stackedToolbarBottomRelToCanvas = stackedToolbarRect.bottom - stackedCanvasRect.top;
+    A.check('ch-stacked-legend-not-covered-by-toolbar',
+      stackedChart.legend.top >= stackedToolbarBottomRelToCanvas,
+      'legend.top=' + stackedChart.legend.top + ' toolbarBottom=' + stackedToolbarBottomRelToCanvas);
+
     // 真正验证"堆叠"本身：最上面一段柱子的顶部像素，应该落在"三段累加值"
     // 对应的像素位置，而不是它自己的值单独从 0 起算的位置——这是
     // scales.x/y.stacked:true 真正生效的可观察后果，不是只回读配置echo。
@@ -1814,6 +1844,25 @@
     var timeaxisTicksFormatted = timeaxisTickLabels.length > 0 &&
       timeaxisTickLabels.every(function (s) { return /^\d{1,2}\/\d{1,2}$/.test(s); });
     A.check('ch-timeaxis-ticks-formatted', timeaxisTicksFormatted,
+      'got ' + timeaxisTickLabels.join(','));
+
+    // 复审线上实测过的破损：不钉 min/max 时第一个刻度会落在数据起点之前，
+    // 数据点少的时候刻度还会连续重复同一天。读 Chart.js 真实算出来的刻度
+    // 值（而不是重新实现一遍"应该长什么样"），核对每个刻度的时间戳都落在
+    // 数据域 [timeaxisDates[0], timeaxisDates[末尾]] 以内，且格式化后的标签
+    // 字符串两两不重复。
+    var timeaxisDataMin = timeaxisDates[0];
+    var timeaxisDataMax = timeaxisDates[timeaxisDates.length - 1];
+    var timeaxisTickValues = timeaxisChart.scales.x.ticks.map(function (t) { return t.value; });
+    var timeaxisTicksWithinRange = timeaxisTickValues.length > 0 &&
+      timeaxisTickValues.every(function (v) { return v >= timeaxisDataMin && v <= timeaxisDataMax; });
+    A.check('ch-timeaxis-ticks-within-data-range', timeaxisTicksWithinRange,
+      'dataRange=[' + timeaxisDataMin + ',' + timeaxisDataMax + '] got ' + timeaxisTickValues.join(','));
+
+    var timeaxisUniqueLabels = {};
+    timeaxisTickLabels.forEach(function (l) { timeaxisUniqueLabels[l] = true; });
+    A.check('ch-timeaxis-ticks-no-duplicate-labels',
+      Object.keys(timeaxisUniqueLabels).length === timeaxisTickLabels.length,
       'got ' + timeaxisTickLabels.join(','));
 
     var timeaxisBefore = { min: timeaxisChart.scales.x.min, max: timeaxisChart.scales.x.max };
