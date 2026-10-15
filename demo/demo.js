@@ -136,7 +136,10 @@
     '  <div class="ds-card" style="margin-bottom:14px">',
     '    <div class="ds-card-title">运行明细（点击表头排序）</div>',
     '    <table class="ds-table" id="t-detail"><thead><tr>',
-    '      <th>批次</th><th>仪器</th><th>切片数</th><th>时长(分)</th><th>状态</th>',
+    // 切片数/时长(分) 两列的 <td> 是数字（下面 class="num" 右对齐），表头
+    // 显式配一个 num 类——不单靠 DS.tables.sortable() 的自动判定，让这里
+    // 本身就是"th/td 的 num 类该怎么配对"的正确写法示例（见 README）。
+    '      <th>批次</th><th>仪器</th><th class="num">切片数</th><th class="num">时长(分)</th><th>状态</th>',
     '    </tr></thead><tbody>',
     detailRows.map(function (r) {
       return '<tr><td>' + r.batch + '</td><td>' + r.instrument +
@@ -264,6 +267,22 @@
       '<table class="ds-table" id="t-table-cn-numeral-safe"><thead><tr><th>名称</th></tr></thead>',
       '  <tbody><tr><td>十字路口</td></tr><tr><td>一次性耗材</td></tr>',
       '    <tr><td>百分之一</td></tr><tr><td>阿拉伯数字耗材</td></tr></tbody></table>',
+      // 用户报的表头/数据对齐错位 bug：下面四张表单独验证
+      // syncNumericHeaderAlignment（表头/数据对齐，跟上面一堆验证排序
+      // 逻辑本身的表不是一回事）。表头在标记里都不带 num 类，交给
+      // sortable() 自动判定。
+      '<table class="ds-table" id="t-align-numeric"><thead><tr><th>数字列</th></tr></thead>',
+      '  <tbody><tr><td class="num">10</td></tr><tr><td class="num">2</td></tr>',
+      '    <tr><td class="num">33</td></tr></tbody></table>',
+      '<table class="ds-table" id="t-align-text"><thead><tr><th>文本列</th></tr></thead>',
+      '  <tbody><tr><td>北京</td></tr><tr><td>上海</td></tr><tr><td>广州</td></tr></tbody></table>',
+      '<table class="ds-table" id="t-align-rerender"><thead><tr><th>列</th></tr></thead>',
+      '  <tbody><tr><td class="num">10</td></tr><tr><td class="num">2</td></tr></tbody></table>',
+      // 用户显式在 th 上写了 num 类，但这一列的 td 从来没加过 num（页面
+      // 作者自己的选择，比如纯展示用的右对齐表头、数据本身左对齐）——
+      // 自动判定必须原样保留，不能因为 td 不是整列 num 就把它摘掉。
+      '<table class="ds-table" id="t-align-override"><thead><tr><th class="num">列</th></tr></thead>',
+      '  <tbody><tr><td>甲</td></tr><tr><td>乙</td></tr></tbody></table>',
       '<div id="g1-tabs" class="ds-tabs">',
       '  <button type="button" class="ds-tab" aria-selected="true" data-panel="g1-a">A</button>',
       '  <button type="button" class="ds-tab" aria-selected="false" data-panel="g1-b">B</button>',
@@ -345,6 +364,10 @@
     DS.tables.sortable('#t-table-cn-numeral-tens');
     DS.tables.sortable('#t-table-cn-numeral-standalone');
     DS.tables.sortable('#t-table-cn-numeral-safe');
+    DS.tables.sortable('#t-align-numeric');
+    DS.tables.sortable('#t-align-text');
+    DS.tables.sortable('#t-align-rerender');
+    DS.tables.sortable('#t-align-override');
     DS.tabs.init('#g1-tabs');
     DS.tabs.init('#g2-tabs');
   }
@@ -863,6 +886,83 @@
       function (td) { return parseFloat(td.textContent.trim()); });
     A.check('ix-table-sortable-works-after-rerender',
       rerenderCells.join(',') === '5,15,30', 'got ' + rerenderCells.join(','));
+
+    // 用户报的 bug：数字列的表头没跟着 td.num 右对齐，视觉上整列错位
+    // 将近一个列宽——点表头排序其实生效了，但盯着的那一列标题底下显示的
+    // 是相邻列的数字，看着像排序没反应。断言验的是"真正的问题"（表头跟
+    // 它自己那一列数据的 computed text-align 是否一致），不是"th 有没有
+    // num 这个类名"这种实现细节——否则换一种配对机制（比如用别的类名）
+    // 照样能瞒过断言。
+    // `.ds-table th` 显式写了 `text-align: left`，而完全没设对齐规则的
+    // `td` 的 computed text-align 是 CSS 初始值 `start`——在本页这种纯
+    // LTR 文档里两者视觉上是同一回事，但作为字符串并不相等。按字面值比较
+    // 会把这个无害的、一直存在的差异误判成"不一致"，跟真正的错位 bug
+    // 混为一谈，所以统一把 `start` 归一成 `left` 再比较（本库不支持
+    // RTL，没有 `dir="rtl"` 用法，归一不会掩盖任何真实问题）。
+    function normalizeAlign(v) { return v === 'start' ? 'left' : v; }
+    function thTdAlign(tableSel) {
+      var th = document.querySelector(tableSel + ' thead th');
+      var td = document.querySelector(tableSel + ' tbody tr td');
+      return [normalizeAlign(getComputedStyle(th).textAlign), normalizeAlign(getComputedStyle(td).textAlign)];
+    }
+
+    // 真实回归现场：#t-detail 的"切片数"/"时长(分)"两列，th 跟它对应的
+    // td.num 必须都是 right；"批次"/"仪器"/"状态"三个文本列 th/td 必须都
+    // 是 left——同一条断言里两种列都验，防止"为了修数字列把文本列搞反"
+    // 这种对称性错误蒙混过关。
+    var detailThs = document.querySelectorAll('#t-detail thead th');
+    var detailFirstRow = document.querySelector('#t-detail tbody tr').children;
+    var detailPairs = [0, 1, 2, 3, 4].map(function (i) {
+      return [normalizeAlign(getComputedStyle(detailThs[i]).textAlign),
+        normalizeAlign(getComputedStyle(detailFirstRow[i]).textAlign)];
+    });
+    A.check('ix-align-detail-numeric-columns-match',
+      detailPairs[2].join('/') === 'right/right' && detailPairs[3].join('/') === 'right/right',
+      'slides=' + detailPairs[2].join('/') + ' minutes=' + detailPairs[3].join('/'));
+    // 文本列（批次/仪器/状态）没有显式对齐规则，th/td 的 computed
+    // text-align 实际值是 CSS 初始值 'start'（不是字面的 'left'——两者
+    // 对 LTR 文档视觉等价，但不是同一个字符串），所以这里不能断言字面值
+    // 'left'，而是："th 跟它自己的 td 一致" 且 "不是 right"——后一条防的
+    // 是"两边都被误改成 right"这种两边同时错、看着依然相等的情况蒙混过关。
+    A.check('ix-align-detail-text-columns-match',
+      [0, 1, 4].every(function (i) {
+        return detailPairs[i][0] === detailPairs[i][1] && detailPairs[i][0] !== 'right';
+      }),
+      detailPairs.map(function (p) { return p.join('/'); }).join(', '));
+
+    // 独立的最小探针：表头在标记里原本不带 num 类，完全交给 sortable()
+    // 自动判定——数字列（td 全带 num）自动右对齐，文本列（td 都不带 num）
+    // 保持左对齐，两条分别验证，防止"数字列对了、文本列被搞反"和反过来
+    // 两种对称性错误。
+    var numericPair = thTdAlign('#t-align-numeric');
+    A.check('ix-align-auto-numeric-column',
+      numericPair[0] === 'right' && numericPair[1] === 'right', 'got ' + numericPair.join('/'));
+    var textPair = thTdAlign('#t-align-text');
+    // 同样不能断言字面 'left'：默认未设置时 computed text-align 是初始值
+    // 'start'。一致且不是 'right' 才是真正要验的东西。
+    A.check('ix-align-auto-text-column',
+      textPair[0] === textPair[1] && textPair[0] !== 'right', 'got ' + textPair.join('/'));
+
+    // 幂等/可重渲染：重渲染后把数字列换成纯文本列，重新调用 sortable()，
+    // 自动对齐必须跟着重新判定（撤回之前自动加的 num），而不是沿用第一次
+    // 调用时判定的结果。
+    var alignRerenderTable = document.getElementById('t-align-rerender');
+    var beforeRerenderPair = thTdAlign('#t-align-rerender');
+    alignRerenderTable.innerHTML =
+      '<thead><tr><th>列</th></tr></thead><tbody><tr><td>北京</td></tr><tr><td>上海</td></tr></tbody>';
+    DS.tables.sortable('#t-align-rerender');
+    var afterRerenderPair = thTdAlign('#t-align-rerender');
+    A.check('ix-align-rerender-follows-new-column-type',
+      beforeRerenderPair.join('/') === 'right/right' &&
+        afterRerenderPair[0] === afterRerenderPair[1] && afterRerenderPair[0] !== 'right',
+      'before=' + beforeRerenderPair.join('/') + ' after=' + afterRerenderPair.join('/'));
+
+    // 显式优先：页面作者在 th 上手写了 num 类，但这一列的 td 从来没有
+    // num（他自己的选择）——sortable() 的自动判定不得把这个手写的类摘掉，
+    // 即便按"整列是否都带 num"的标准来看这一列并不是数字列。
+    var overrideTh = document.querySelector('#t-align-override thead th');
+    A.check('ix-align-explicit-th-class-not-overridden',
+      overrideTh.classList.contains('num'), 'class=' + overrideTh.className);
 
     // Review B2：两组独立 tabs 互不干扰——点 g2 的 tab 不该把 g1 当前显示
     // 的面板也隐藏掉（旧实现用 document.querySelectorAll('.ds-panel') 全文档

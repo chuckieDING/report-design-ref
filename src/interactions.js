@@ -143,10 +143,63 @@ window.DS = window.DS || {};
     return value;
   }
 
+  /* 用户报的 bug：数字列的 <td class="num"> 右对齐，但同一列的 <th> 没有
+     任何机制跟着右对齐（components.css 里 `.ds-table th` 固定左对齐），
+     视觉上整列错位将近一个列宽——标题"时长(分)"正下方显示的其实是"切片数"
+     那一列的数字。用户点"时长"表头排序，排序确实执行了，但他盯着标题
+     下方看到的是切片数在变，于是报成"排序没生效"。
+
+     判定"这是不是数字列"不复用下面点击排序时的 parseSortableNumber 数值
+     解析——那套解析是"内容长得像不像数字"，跟页面作者有没有把 td 标成
+     class="num"（从而让它实际右对齐）是两件事：一列 ID 编号内容全是数字
+     但作者故意不想让它右对齐（没加 td.num）的话，按内容解析会误判成数字
+     列、反过来把表头错误地改成右对齐，制造一个新的、方向相反的错位。
+     这里改成直接扫描这一列的 <td> 是不是全都已经带着 class="num"（页面
+     作者自己已经声明过的、真实生效的对齐方式）——按列统一判定，跟下面
+     判断数字列用的 columnIsNumeric 是同一种"扫描整列、要求全部一致"的
+     思路，只是判定谓词换成"已经右对齐"而不是"内容能转数字"，这样自动
+     加上去的 th.num 永远跟它对应的 td 实际对齐方式一致，不会凭空引入新的
+     错位。 */
+  function syncNumericHeaderAlignment(table) {
+    var headRow = table.tHead && table.tHead.rows[0];
+    var tbody = table.tBodies[0];
+    if (!headRow || !tbody) return;
+    var rows = Array.prototype.slice.call(tbody.rows);
+    Array.prototype.forEach.call(headRow.cells, function (th, index) {
+      var columnIsRightAligned = rows.length > 0 && rows.every(function (r) {
+        var cell = r.cells[index];
+        return !cell || cell.classList.contains('num');
+      });
+      var weAddedIt = th.dataset.dsAutoNum === '1';
+      if (columnIsRightAligned) {
+        if (!th.classList.contains('num')) {
+          th.classList.add('num');
+          th.dataset.dsAutoNum = '1';
+        }
+        // 已经带 num 类：不管是页面作者手写的还是我们上次自动加的，原样
+        // 保留，不重复处理。
+      } else if (weAddedIt) {
+        // 列不再整列右对齐了（重渲染换了新数据）——撤回我们自己加的类，
+        // 跟着新数据重新判定。使用者自己手写在 th 上的 num 类从来不会
+        // 走到这个分支（weAddedIt 只在我们自己加过的 th 上为真），他的
+        // 显式选择不受影响。
+        th.classList.remove('num');
+        delete th.dataset.dsAutoNum;
+      }
+    });
+  }
+
   DS.tables = {
     sortable: function (tableSelector) {
       var table = document.querySelector(tableSelector);
       if (!table) return;
+
+      /* 每次调用都重新判定一遍表头对齐——不像下面的点击监听器只在首次
+         调用时绑定。消费者按标准做法重渲染表格后再调一次 sortable()，
+         这时某一列完全可能从数字列变成文本列（或反过来），表头对齐要
+         跟着变，不能只在第一次调用时生效一次就不再更新。 */
+      syncNumericHeaderAlignment(table);
+
       /* 幂等保护防的是"对同一张 <table> 重复挂监听器"（重复会叠加监听器，
          导致一次点击触发两次排序回调，"升序点击"实际落到降序结果），不是
          "这张表一辈子只能排一次序"。此前的实现把监听器逐个挂在每个 <th>
