@@ -19,7 +19,14 @@ window.DS = window.DS || {};
   // 挤歪。用黑名单而不是白名单：省略 config.type 的混合图、或日后自定义注册
   // 的图表类型，默认按笛卡尔处理——渲染上色块/轴线不对会立刻看得见，比"静默
   // 少一套主题色"更容易被发现。
-  var NON_CARTESIAN_TYPES = ['pie', 'doughnut', 'polarArea', 'radar'];
+  //
+  // 'sankey'（src/vendor/chartjs-chart-sankey.umd.js 注册）同样要排除：它
+  // 自己的 x/y 是内部数值轴（type:'linear', bounds:'data', display:false，
+  // 纯粹用来算布局，不给开发者配置/缩放），不是 radar/polarArea 那种共享
+  // 'r' 轴的场景，也不是真正意义上的笛卡尔图——塞进去会重演当年饼图的
+  // 幽灵坐标轴问题（见下面 paint() 里的说明），还会被 create() 误挂上对
+  // 它毫无意义的缩放工具条。
+  var NON_CARTESIAN_TYPES = ['pie', 'doughnut', 'polarArea', 'radar', 'sankey'];
   // 弧形族：每个数据点一个扇区，需要颜色数组而不是单一颜色。
   var ARC_TYPES = ['pie', 'doughnut', 'polarArea'];
 
@@ -558,9 +565,83 @@ window.DS = window.DS || {};
         // 和深色背景冲突的内置装饰。
         rs.ticks.backdropColor = 'transparent';
       }
+      // 'sankey' 是第四类：既不是笛卡尔图，也不共用 radar/polarArea 的 'r' 轴
+      // ——它没有任何开发者可见的坐标轴需要注入颜色（上面 NON_CARTESIAN_TYPES
+      // 的说明），这里故意留空、不落入 isCartesian 分支，调色逻辑在下面的
+      // 数据集循环里单独处理（isSankey 分支）。
 
       var arc = isArc(config.type);
+      // chartjs-chart-sankey 的数据集不是"每个数据点一个颜色"的弧形族，也不是
+      // 普通折线/柱状图那套 backgroundColor/borderColor 语义——它的节点
+      // （colorFrom/colorTo，按 Chart.js scriptable element 选项解析，运行时
+      // 以 ctx 为参数调用）和标签文字色（color，控制器直接当字符串字面量用，
+      // 不是 scriptable）要分开处理，必须在下面 forEach 顶部单独短路，不能
+      // 落进 arc/else 的通用染色分支——那条分支会把 backgroundColor/
+      // borderColor 当成笛卡尔语义覆盖掉，而 borderColor 在这里其实是节点
+      // 描边色，语义完全不同。
+      var isSankey = config.type === 'sankey';
       (config.data.datasets || []).forEach(function (d, i) {
+        if (isSankey) {
+          // 节点配色：同一个节点键不管在哪条流向里出现（当 from 还是当 to），
+          // 都应该拿到同一个分类序列色——按"第一次出现的顺序"分配，和弧形族
+          // 的按数据点索引取模是同一套取色策略，只是索引来源从"数据点下标"
+          // 换成了"节点第一次出现的顺序"。nodeIndex/nodeOrder 必须在每次
+          // paint() 里重新算一遍（不能缓存到数据集上）：retheme() 靠重新执行
+          // 这段逻辑换新的 c.series 取值，顺带也能适应调用方运行时增删了
+          // data 数组里的流向记录。
+          var nodeOrder = [];
+          var nodeIndex = {};
+          (d.data || []).forEach(function (flow) {
+            [flow && flow.from, flow && flow.to].forEach(function (key) {
+              if (key != null && !Object.prototype.hasOwnProperty.call(nodeIndex, key)) {
+                nodeIndex[key] = nodeOrder.length;
+                nodeOrder.push(key);
+              }
+            });
+          });
+          var seriesColorFor = function (key) {
+            var idx = nodeIndex[key] || 0;
+            return c.series[idx % c.series.length];
+          };
+          // colorFrom/colorTo 是 chartjs-chart-sankey 注册的 'flow' 元素的
+          // scriptable 选项，Chart.js 按每条流向记录各调用一次，ctx.dataset/
+          // ctx.dataIndex 组合出当前这条记录（和官方文档示例的读取方式一致）。
+          // __dsAutoColorFrom/__dsAutoColorTo 各自独立标记，调用方只定义了
+          // 其中一个的话，另一个仍然跟主题走——和弧形族 __dsAutoBg/
+          // __dsAutoBorder 拆分开的理由完全一样（见那里的说明）。
+          if (d.colorFrom == null || d.__dsAutoColorFrom) {
+            d.colorFrom = function (ctx) {
+              var raw = ctx && ctx.dataset && ctx.dataset.data && ctx.dataset.data[ctx.dataIndex];
+              return seriesColorFor(raw && raw.from);
+            };
+            d.__dsAutoColorFrom = true;
+          }
+          if (d.colorTo == null || d.__dsAutoColorTo) {
+            d.colorTo = function (ctx) {
+              var raw = ctx && ctx.dataset && ctx.dataset.data && ctx.dataset.data[ctx.dataIndex];
+              return seriesColorFor(raw && raw.to);
+            };
+            d.__dsAutoColorTo = true;
+          }
+          // 节点标签文字色：chartjs-chart-sankey 的 _drawLabels() 把
+          // dataset.color 当成普通字符串直接赋给 ctx.fillStyle（不是
+          // scriptable，传函数进去画布会静默忽略、文字保持上一次的颜色），
+          // 所以这里只能写一个固定值，不能跟 colorFrom/colorTo 一样写成
+          // "按节点取色"的函数。
+          if (d.color == null || d.__dsAutoColor) {
+            d.color = c.text;
+            d.__dsAutoColor = true;
+          }
+          // 节点描边：和弧形族的扇区描边同一个理由——用 --color-surface
+          // 把相邻节点的矩形分隔开，深浅主题下都有干净的轮廓。同样是
+          // dataset.borderColor 被 _drawNodes() 当成普通字符串用，不是
+          // scriptable。
+          if (d.borderColor == null || d.__dsAutoBorder) {
+            d.borderColor = cssVar('--color-surface');
+            d.__dsAutoBorder = true;
+          }
+          return;
+        }
         if (arc) {
           // 弧形族：每个扇区一个颜色，数组长度按数据点数来，颜色不够就循环取模。
           // 描边统一用 --color-surface：深浅主题下都能把相邻扇区正确分隔开，

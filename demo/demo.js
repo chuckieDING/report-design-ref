@@ -218,6 +218,12 @@
     '        下载第三方库，所以这里用数值轴(linear) + 自定义刻度格式化模拟日期轴的',
     '        视觉效果，细节见 README「时间轴」一节。</div>',
     '      <div class="ds-chart-host"><canvas id="c-timeaxis"></canvas></div></div>',
+    '    <div class="ds-card"><div class="ds-card-title">桑基图（流向/分配）</div>',
+    '      <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">',
+    '        典型用于"流向/分配"场景——这里是样本从各接收点流向各仪器、再流向',
+    '        各结果状态；节点与流向都走六条分类序列色，流向按设计默认半透明，',
+    '        交叉处仍能分辨谁流向谁。</div>',
+    '      <div class="ds-chart-host"><canvas id="c-sankey"></canvas></div></div>',
     '  </div>',
     '</div></div>'
   ].join('');
@@ -552,6 +558,15 @@
         }
       }
     }
+  });
+
+  /* ---------- 桑基图：样本从各接收点流向各仪器、再流向各结果状态。
+     colorFrom/colorTo/color/borderColor 全部留空交给 paint() 自动按节点分配
+     分类序列色——跟调用方"不指定就用默认主题色"的约定一致，不在 demo 页
+     这里手写一份颜色逻辑。 ---------- */
+  var sankeyChart = makeChart(document.getElementById('c-sankey'), {
+    type: 'sankey',
+    data: { datasets: [{ label: '样本流向', data: DS_MOCK.sankeyFlows() }] }
   });
 
   /* ---------- SVG 甘特 / 热力：Chart.js 画不了，复用同一套 token ---------- */
@@ -2325,6 +2340,146 @@
     DS.charts.destroy(polarChart);
     radarHost.remove();
     polarHost.remove();
+
+    // ---------------- 桑基图（Sankey，第四类非笛卡尔图）----------------
+    // 真实演示卡片："组件全览"里那张，DS_MOCK.sankeyFlows() 固定给出
+    // 3 接收点 + 4 仪器 + 3 结果状态 = 10 个不重复节点、24 条流向记录。
+    A.check('ch-sankey-demo-card-created', sankeyChart !== null, '');
+    var sankeyDemoMeta = sankeyChart.getDatasetMeta(0);
+    A.check('ch-sankey-demo-card-flow-count', sankeyDemoMeta.data.length === 24,
+      'got ' + sankeyDemoMeta.data.length);
+    A.check('ch-sankey-demo-card-node-count',
+      !!sankeyDemoMeta.controller._nodes && sankeyDemoMeta.controller._nodes.size === 10,
+      'got ' + (sankeyDemoMeta.controller._nodes && sankeyDemoMeta.controller._nodes.size));
+
+    // 独立小样本：节点数精确等于序列色数量（6 个），colorFrom/colorTo 的
+    // 返回值可以逐一核对具体取值，不是"随便挑一个比较"。直接调用 paint()
+    // 装配出来的 colorFrom/colorTo 函数本身，传入的 ctx 形状
+    // {dataset, dataIndex} 和 Chart.js 在内部调用 scriptable 选项时一致
+    // （ctx.dataset.data[ctx.dataIndex] 取回原始 {from,to,flow} 记录）。
+    var sankeyHost = document.createElement('div');
+    sankeyHost.className = 'ds-chart-host';
+    var sankeyCanvas = document.createElement('canvas');
+    sankeyHost.appendChild(sankeyCanvas);
+    document.body.appendChild(sankeyHost);
+    var sankeyFixtureData = [
+      { from: '接收点A', to: '一号仪器', flow: 10 },
+      { from: '接收点B', to: '一号仪器', flow: 6 },
+      { from: '接收点B', to: '二号仪器', flow: 8 },
+      { from: '一号仪器', to: '正常完成', flow: 9 },
+      { from: '一号仪器', to: '复查', flow: 4 },
+      { from: '二号仪器', to: '正常完成', flow: 5 },
+      { from: '二号仪器', to: '复查', flow: 3 }
+    ];
+    var sankeyChart2 = DS.charts.create(sankeyCanvas, {
+      type: 'sankey',
+      data: { datasets: [{ label: '流向', data: sankeyFixtureData }] }
+    });
+    var sankeyMeta = sankeyChart2.getDatasetMeta(0);
+    A.check('ch-sankey-renders-flows', sankeyMeta.data.length === 7, 'got ' + sankeyMeta.data.length);
+    A.check('ch-sankey-renders-nodes',
+      !!sankeyMeta.controller._nodes && sankeyMeta.controller._nodes.size === 6,
+      'got ' + (sankeyMeta.controller._nodes && sankeyMeta.controller._nodes.size));
+
+    var sankeyThemeNow = DS.charts.themeColors();
+    var sankeyDs = sankeyChart2.data.datasets[0];
+    // 节点第一次出现顺序：接收点A(0, dataIndex0.from) / 一号仪器(1, dataIndex0.to) /
+    // 接收点B(2, dataIndex1.from) / 二号仪器(3, dataIndex2.to) /
+    // 正常完成(4, dataIndex3.to) / 复查(5, dataIndex4.to)—— 6 个节点正好用满
+    // 六条分类序列色。
+    A.check('ch-sankey-color-from-uses-node-token',
+      sankeyDs.colorFrom({ dataset: sankeyDs, dataIndex: 0 }) === sankeyThemeNow.series[0],
+      'got ' + sankeyDs.colorFrom({ dataset: sankeyDs, dataIndex: 0 }));
+    A.check('ch-sankey-color-to-uses-node-token',
+      sankeyDs.colorTo({ dataset: sankeyDs, dataIndex: 0 }) === sankeyThemeNow.series[1],
+      'got ' + sankeyDs.colorTo({ dataset: sankeyDs, dataIndex: 0 }));
+    // 变异防护：colorFrom 对两个不同节点必须给出不同颜色——如果实现退化成
+    // "永远返回 series[0]"，上面两条断言可能侥幸撞对第一个节点，这一条
+    // 才能抓住"所有节点同色"的恒真陷阱。
+    A.check('ch-sankey-color-differs-per-node',
+      sankeyDs.colorFrom({ dataset: sankeyDs, dataIndex: 0 }) !==
+        sankeyDs.colorFrom({ dataset: sankeyDs, dataIndex: 1 }),
+      'idx0=' + sankeyDs.colorFrom({ dataset: sankeyDs, dataIndex: 0 }) +
+        ' idx1=' + sankeyDs.colorFrom({ dataset: sankeyDs, dataIndex: 1 }));
+
+    A.check('ch-sankey-label-color-from-text-token',
+      sankeyDs.color === sankeyThemeNow.text, 'got ' + sankeyDs.color);
+    var sankeySurface = getComputedStyle(document.documentElement)
+      .getPropertyValue('--color-surface').trim();
+    A.check('ch-sankey-node-border-from-surface-token',
+      sankeyDs.borderColor === sankeySurface, 'got ' + sankeyDs.borderColor);
+
+    // 不被误判成笛卡尔图：$ds 缩放状态和缩放工具条都只在 create() 判定
+    // isCartesian(config.type) 为真时才会被挂上（见 src/charts.js create()），
+    // sankey 一旦被错误并入白名单，这两条都会翻过来。
+    A.check('ch-sankey-not-treated-as-cartesian',
+      !sankeyChart2.$ds, 'got $ds=' + JSON.stringify(sankeyChart2.$ds));
+    A.check('ch-sankey-no-zoom-toolbar-mounted',
+      !sankeyHost.querySelector('.ds-chart-toolbar'), '');
+    // 不被注入 x/y 轴颜色：chartjs-chart-sankey 自己的 overrides 已经把 x/y
+    // 设成 display:false 的内部数值轴，Chart.js 仍会给它们解析出一套自己的
+    // 默认 grid/ticks 颜色（不是我们的主题色，这里不能拿"有没有颜色"当判据,
+    // 必须直接跟 DS 的主题 token 比较）——paint() 的笛卡尔分支如果误判成
+    // 笛卡尔图，会把 grid.color/ticks.color 硬塞成 c.grid/c.text，这里应该
+    // 跟那两个 token 值都不相等，证明笛卡尔分支确实没碰过这两根轴。
+    A.check('ch-sankey-x-scale-grid-not-theme-grid',
+      sankeyChart2.options.scales.x.grid.color !== sankeyThemeNow.grid,
+      'grid.color=' + sankeyChart2.options.scales.x.grid.color + ' themeGrid=' + sankeyThemeNow.grid);
+    A.check('ch-sankey-x-scale-ticks-not-theme-text',
+      sankeyChart2.options.scales.x.ticks.color !== sankeyThemeNow.text,
+      'ticks.color=' + sankeyChart2.options.scales.x.ticks.color + ' themeText=' + sankeyThemeNow.text);
+
+    // 主题切换后重绘：s1..s6 六条序列色浅深主题下取值相同（tokens.css 的
+    // 既定设计），切主题测不出颜色变化；但 --color-text 与 --color-surface
+    // 两套主题下确实不同，借这两个字段验证 retheme() 真的重新跑过 paint()。
+    var sankeyColorBefore = sankeyDs.color;
+    var sankeyBorderBefore = sankeyDs.borderColor;
+    DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');
+    var sankeyThemeAfter = DS.charts.themeColors();
+    A.check('ch-sankey-retheme-updates-label-color',
+      sankeyDs.color === sankeyThemeAfter.text && sankeyDs.color !== sankeyColorBefore,
+      'before=' + sankeyColorBefore + ' after=' + sankeyDs.color);
+    var sankeySurfaceAfter = getComputedStyle(document.documentElement)
+      .getPropertyValue('--color-surface').trim();
+    A.check('ch-sankey-retheme-updates-node-border',
+      sankeyDs.borderColor === sankeySurfaceAfter && sankeyDs.borderColor !== sankeyBorderBefore,
+      'before=' + sankeyBorderBefore + ' after=' + sankeyDs.borderColor);
+    DS.theme.set(DS.theme.get() === 'dark' ? 'light' : 'dark');  // 复位
+
+    // 调用方自定义 colorFrom 必须被尊重，不能被 paint() 覆盖掉——和弧形族
+    // __dsAutoBg/__dsAutoBorder 的"调用方给了就不碰"是同一个约定。
+    var sankeyOverrideHost = document.createElement('div');
+    sankeyOverrideHost.className = 'ds-chart-host';
+    var sankeyOverrideCanvas = document.createElement('canvas');
+    sankeyOverrideHost.appendChild(sankeyOverrideCanvas);
+    document.body.appendChild(sankeyOverrideHost);
+    var sankeyCustomFn = function () { return 'magenta'; };
+    var sankeyOverrideChart = DS.charts.create(sankeyOverrideCanvas, {
+      type: 'sankey',
+      data: { datasets: [{ data: sankeyFixtureData.slice(0, 1), colorFrom: sankeyCustomFn }] }
+    });
+    A.check('ch-sankey-respects-caller-colorFrom',
+      sankeyOverrideChart.data.datasets[0].colorFrom === sankeyCustomFn, '');
+
+    DS.charts.destroy(sankeyChart2);
+    DS.charts.destroy(sankeyOverrideChart);
+    sankeyHost.remove();
+    sankeyOverrideHost.remove();
+
+    // ---------------- 空数据：不崩，退化成"暂无数据" ----------------
+    var sankeyEmptyHost = document.createElement('div');
+    sankeyEmptyHost.className = 'ds-chart-host';
+    var sankeyEmptyCanvas = document.createElement('canvas');
+    sankeyEmptyHost.appendChild(sankeyEmptyCanvas);
+    document.body.appendChild(sankeyEmptyHost);
+    var sankeyEmptyChart = DS.charts.create(sankeyEmptyCanvas, {
+      type: 'sankey',
+      data: { datasets: [{ data: [] }] }
+    });
+    A.check('ch-sankey-empty-data-no-crash-returns-null', sankeyEmptyChart === null, '');
+    A.check('ch-sankey-empty-data-shows-placeholder',
+      !!sankeyEmptyHost.querySelector('.ds-chart-empty'), '');
+    sankeyEmptyHost.remove();
 
     document.querySelector('[data-panel="p-play"]').click();
   });

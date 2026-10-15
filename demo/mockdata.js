@@ -55,6 +55,30 @@ window.DS_MOCK = (function () {
     return out;
   }
 
+  // 桑基图演示数据：样本从各接收点流向各仪器、再流向各结果状态——典型的
+  // "流向/分配"场景，三段节点全是通用占位名词，不对应任何真实机构/客户。
+  // 用固定笛卡尔积（3 接收点 × 4 仪器 + 4 仪器 × 3 结果状态 = 24 条流向记录，
+  // 10 个不重复节点）而不是按条件随机抽样生成：数量和节点集合要能被断言
+  // 直接核对，抽样式生成会让"这批数据到底有几个节点"变成不确定的东西。
+  function sankeyFlows() {
+    var r = rng(61);
+    var sources = ['接收点A', '接收点B', '接收点C'];
+    var mids = instruments();
+    var ends = ['结果：正常', '结果：复查', '结果：异常'];
+    var out = [];
+    sources.forEach(function (s) {
+      mids.forEach(function (m) {
+        out.push({ from: s, to: m, flow: Math.round(5 + r() * 35) });
+      });
+    });
+    mids.forEach(function (m) {
+      ends.forEach(function (e) {
+        out.push({ from: m, to: e, flow: Math.round(5 + r() * 35) });
+      });
+    });
+    return out;
+  }
+
   function tableRows(n) {
     var r = rng(7), names = instruments(), out = [];
     var states = ['正常', '待机', '报警'];
@@ -72,6 +96,6 @@ window.DS_MOCK = (function () {
 
   return {
     series: series, months: months, instruments: instruments, tableRows: tableRows,
-    weekdays: weekdays, rates: rates, dates: dates
+    weekdays: weekdays, rates: rates, dates: dates, sankeyFlows: sankeyFlows
   };
 })();

@@ -110,7 +110,17 @@ def build(page: str = 'demo') -> pathlib.Path:
     html = inline(html, {
         '/*__TOKENS__*/': read(SRC / 'tokens.css'),
         '/*__COMPONENTS__*/': read(SRC / 'components.css'),
-        '/*__VENDOR__*/': strip_sourcemap(read(SRC / 'vendor' / 'chart.umd.js')),
+        # chartjs-chart-sankey 的 UMD 工厂函数在非 AMD/CommonJS 环境下读的是
+        # 全局 `Chart`（见该文件头部 `o((t=...globalThis...).Chart, t.Chart.helpers)`
+        # 这一支判断分支），必须排在 chart.umd.js 之后拼进同一个 <script> 标签——
+        # 顺序反了的话 `t.Chart` 还不存在，`t.Chart.helpers` 直接抛
+        # TypeError，整页后续脚本都不会执行。两个 vendor 文件都走同一份
+        # strip_sourcemap()，换版本也不用记得手改源文件（同 chart.umd.js 的
+        # 既有注释）。
+        '/*__VENDOR__*/': '\n;\n'.join([
+            strip_sourcemap(read(SRC / 'vendor' / 'chart.umd.js')),
+            strip_sourcemap(read(SRC / 'vendor' / 'chartjs-chart-sankey.umd.js')),
+        ]),
         '/*__INTERACTIONS__*/': strip_modules(read(SRC / 'interactions.js')),
         '/*__CHARTS__*/': strip_modules(read(SRC / 'charts.js')),
         '/*__CHARTS_SVG__*/': strip_modules(read(SRC / 'charts-svg.js')),

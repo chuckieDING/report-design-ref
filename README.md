@@ -28,6 +28,10 @@ python3 build.py starter   # → starter.html
 
 `build.py` 把 `src/` 的分片（tokens / components / vendor / interactions / charts / charts-svg）与页面自己的脚本内联进模板，并强制两条守卫：**零外链**（`guard()`，`<a>` 除外）、**无客户标识**。违反即构建失败并抛异常，不会静默产出坏文件。
 
+`src/vendor/` 下现在是两个文件内联进同一个 `<script>` 标签：`chart.umd.js`（Chart.js 4.4.0 本体）在前，`chartjs-chart-sankey.umd.js`（桑基图插件）在后——顺序不能换，插件的 UMD 工厂函数在非 AMD/CommonJS 环境下读的是全局 `Chart`，Chart.js 必须先执行完才有这个全局可读。两个 vendor 文件都内联之后，产物体积比只有 Chart.js 时大了约 26 KB（`demo.html`/`index.html` 从约 437 KB 增至约 462 KB；`starter.html` 从约 306 KB 增至约 316 KB）——桑基插件本身压缩后约 10.6 KB，其余差值是新增的「组件全览」演示卡片内容和 `?selftest=1` 下的断言代码（只在带这个参数访问时才会被执行，但源码仍会内联进产物）。
+
+
+
 ### 去标识化词表：本地补充
 
 `build.py` 里的 `DEFAULT_DENYLIST` 是一份**通用占位词**（`ACME`、`ExampleCorp` 之类），不对应任何真实机构或客户——**使用者请替换成自己项目实际要拦截的禁用词**。
@@ -93,9 +97,9 @@ python3 build.py starter   # → starter.html
 
 工具条与拖框选在四种模式下**始终可用**。缩放工具条只挂在笛卡尔坐标图上（折线/柱状/面积等），不挂 pie / doughnut / polarArea / radar——那几类图没有"轴范围"概念，缩放没有意义。
 
-## 报表常用的四种图表
+## 报表常用的四种图表（以及桑基图）
 
-demo 页「组件全览」里补了四种报表最常出现、但此前没演示过的图表形态（`demo/demo.js` 的 `c-combo` / `c-stacked` / `c-area` / `c-timeaxis`）。四种都是 Chart.js 原生支持的类型/配置组合，缺的只是演示、主题适配和断言——不是新的图表引擎。
+demo 页「组件全览」里补了四种报表最常出现、但此前没演示过的图表形态（`demo/demo.js` 的 `c-combo` / `c-stacked` / `c-area` / `c-timeaxis`）。四种都是 Chart.js 原生支持的类型/配置组合，缺的只是演示、主题适配和断言——不是新的图表引擎。桑基图（`c-sankey`）不一样，它是本库唯一一个**不是 Chart.js 内置类型**的图表，走的是单独内联的第三方插件，见下方「桑基图」一节。
 
 ### 双轴组合图（量 + 率）
 
@@ -132,6 +136,32 @@ Chart.js 的 `'time'`/`'timeseries'` 轴类型本身依赖日期适配器（如 
 
 这个退化方案能生效，依赖另一处修复：`paint()` 此前会给"类目轴"（`zoomAxisFor()` 判定出的那一个，时间轴场景下通常是 `x`）无条件覆盖 `ticks.callback`，用于超长中文标签截断。调用方自己提供的 `ticks.callback`（比如 `DS.charts.dateTicks()`）在每次 `paint()`（首次 `create()`、每次主题切换触发的 `retheme()`）都会被原地冲掉——时间戳先被 `getLabelForValue()` 转成完整数字字符串（如 `"1,704,067,200,000"`），再被当成"超长标签"截断成一串看不出意义的 `"1,704,0…"`。现在改成只在调用方没有提供 `ticks.callback` 时才注入默认截断逻辑，不影响已有的长标签截断行为（没设自定义回调的图表不受影响）。
 
+### 桑基图（流向/分配）
+
+典型用于"流向/分配"场景——demo 页「组件全览」的 `c-sankey` 卡片演示的是样本从各接收点流向各仪器、再流向各结果状态，三段节点依次收窄/发散，很适合用桑基图直观呈现"谁流向了谁、流量各占多少"。
+
+```js
+DS.charts.create(canvas, {
+  type: 'sankey',
+  data: {
+    datasets: [{
+      label: '样本流向',
+      data: [
+        { from: '接收点A', to: '一号仪器', flow: 10 },
+        { from: '一号仪器', to: '结果：正常', flow: 9 }
+        // ...更多 {from, to, flow} 记录
+      ]
+    }]
+  }
+});
+```
+
+数据形状是 `{from, to, flow}` 记录的数组（字段名可通过 `dataset.parsing` 自定义，用法见 [chartjs-chart-sankey 文档](https://github.com/kurkle/chartjs-chart-sankey)），不是 Chart.js 其余图表那种 `labels` + 按索引对齐的 `data` 数组。节点键只要字符串相等就会被合并成同一个节点——跨阶段串联（比如上例里"一号仪器"同时是第一段的 `to` 和第二段的 `from`）靠的是字面量完全相等，不是模糊匹配。
+
+**配色是自动的，不需要调用方关心**：`paint()` 按节点第一次出现的顺序给每个节点分配 `--chart-s1..s6`（不管这个节点在某条流向记录里是 `from` 还是 `to`，颜色都一致），流向本身用 Chart.js 自带的 `.alpha(0.5)` 半透明渲染（插件写死的行为，交叉处依然能分辨谁流向谁，不需要额外配置）。节点标签文字色取 `--color-text`，节点描边取 `--color-surface`（和弧形族扇区描边同一个理由：深浅主题下都能把相邻节点分隔开）。跟其余图表同一套"调用方给了就不碰"的约定：`dataset.colorFrom`/`colorTo`/`color`/`borderColor` 只要显式提供了初始值，就不会被 `paint()`/`retheme()` 覆盖。
+
+**不要指望它能缩放，也不要给它挂缩放工具条。** chartjs-chart-sankey 的 x/y 是插件自己注册的内部数值轴（`bounds: 'data'`、`display: false`），纯粹用来算布局，不是开发者可配置/可缩放的笛卡尔轴——`DS.charts` 把 `'sankey'` 并入了 `NON_CARTESIAN_TYPES` 黑名单，`create()` 不会给它挂 `$ds` 缩放状态或悬浮工具条，`paint()` 也不会往它的轴上注入网格/刻度主题色，跟 pie/doughnut/radar/polarArea 是同一个处理方式。
+
 ### `paint()` 接管 / 尊重的字段一览
 
 `DS.charts.paint(config)` 在 `create()` 和每次主题切换触发的 `retheme()` 时都会重新跑一遍，把当前主题的颜色/布局惯例写进传入的 Chart.js config。哪些字段会被它接管、哪些会尊重调用方自己的配置，历史上多次因为没写清楚而被复审反复挖出同类问题（额外轴网格默认值、类目轴 `ticks.callback`），这里一次性列清楚：
@@ -146,6 +176,7 @@ Chart.js 的 `'time'`/`'timeseries'` 轴类型本身依赖日期适配器（如 
 | 每根坐标轴的 `grid.color`、`ticks.color`、`border.color`（笛卡尔图的 `x`/`y`/额外轴）或 `grid.color`/`angleLines.color`/`pointLabels.color`/`ticks.color`（radar/polarArea 的 `r` 轴） | 当前主题色 |
 | `scales.r.ticks.backdropColor`（radar/polarArea） | 强制 `'transparent'`，关掉 Chart.js 默认的半透明白底 |
 | `dataset.backgroundColor`/`borderColor`——仅当这一侧是库自动赋值的（内部用 `__dsAutoBg`/`__dsAutoBorder` 标记，调用方没有自己提供初始值） | 当前主题的序列色（面积图 fill 数据集的 `backgroundColor` 是半透明版本） |
+| 桑基图 `dataset.colorFrom`/`colorTo`/`color`/`borderColor`——仅当这一项是库自动赋值的（`__dsAutoColorFrom`/`__dsAutoColorTo`/`__dsAutoColor`/`__dsAutoBorder` 标记） | `colorFrom`/`colorTo` 按节点分配的分类序列色（scriptable 函数）；`color`（标签文字）是当前主题的 `--color-text`；`borderColor`（节点描边）是当前主题的 `--color-surface` |
 
 **只在调用方没配置时才补默认值**（"没传才补"，配置了就原样尊重）：
 
@@ -211,7 +242,8 @@ Chart.js 的 `'time'`/`'timeseries'` 轴类型本身依赖日期适配器（如 
 
 24. **任何为测试而造的设施**（故障注入用的图表、尺寸探针之类）**必须只在 `?selftest=1` 这个 URL 参数下才创建**，不能在正常加载路径里存在。否则这些测试专用的东西会随交付页一起出厂，表现为控制台里莫名其妙的警告、画面上出现一张坏图、或图例里出现 `undefined` 这种字样——客户看到的产物里混进了开发期的脚手架。
 25. **断言写完之后一定要做变异验证**：临时故意破坏对应的实现代码，确认断言会转红，再把实现代码改回来。本项目里"断言恒真"（看起来在测试，实际上永远通过，哪怕实现是错的）反复出现在这些地方：`css()` 读取返回值的方式导致 `!==` 比较恒为真；深色和浅色主题下某个 token 恰好同色，导致"颜色确实变了"这条断言测不出差异；手搓的回调函数自己构造参数再自己验证，等于自证；测试用的数据恰好落在观察不出差异的取值点上（比如两个本该不同的柱子高度因为取整而相等）。不做变异验证，这类断言会一直安静地通过，直到真正出 bug 时才发现它从来没起作用。
-26. **`tests/test_browser.py` 里的两条护栏不要删：** `test_no_suite_threw`（整套浏览器断言如果中途抛异常崩溃，后面的断言会悄无声息地全部消失，不会报错，只是"没跑"）和 `test_assertion_count_floor`（断言总数设零余量下限，低于这个数字说明有断言被意外删掉或没跑到）。历史上真实发生过整套断言跑丢了 80%，而 `pytest` 依然全绿的情况——因为"没跑到的断言"和"跑了且通过的断言"从统计上看是一样的，必须靠独立的"崩溃检测"和"数量下限"两条护栏才能发现。
+26. **桑基图数据集里，`colorFrom`/`colorTo` 和 `color`/`borderColor` 的"函数"语义不一样，不能用同一套写法。** `colorFrom`/`colorTo` 是 chartjs-chart-sankey 注册的 `flow` 元素的 scriptable 选项，Chart.js 按每条流向记录各解析一次、以 `ctx` 为参数调用，写成函数是正确用法。但节点标签文字色 `dataset.color` 和节点描边色 `dataset.borderColor`，插件内部的 `_drawLabels()`/`_drawNodes()` 是直接 `ctx.fillStyle = dataset.color || 'black'` 这样把它当一个普通字符串用，不会调用它——如果照着 `colorFrom`/`colorTo` 的写法也传一个函数进去，Canvas 的 `fillStyle` 赋值会静默忽略非法值（不抛错，保留上一次的颜色），表现为标签文字/节点描边颜色跟主题完全对不上，但控制台干干净净、没有任何报错线索。`src/charts.js` 的 `paint()` 对这两类字段分别用了不同的赋值方式（`colorFrom`/`colorTo` 赋函数、`color`/`borderColor` 赋字符串），复用这套逻辑时不要图省事统一成一种写法。
+27. **`tests/test_browser.py` 里的两条护栏不要删：** `test_no_suite_threw`（整套浏览器断言如果中途抛异常崩溃，后面的断言会悄无声息地全部消失，不会报错，只是"没跑"）和 `test_assertion_count_floor`（断言总数设零余量下限，低于这个数字说明有断言被意外删掉或没跑到）。历史上真实发生过整套断言跑丢了 80%，而 `pytest` 依然全绿的情况——因为"没跑到的断言"和"跑了且通过的断言"从统计上看是一样的，必须靠独立的"崩溃检测"和"数量下限"两条护栏才能发现。
 
 ## 测试
 
@@ -227,7 +259,7 @@ python3 -m pytest tests/ -v
 
 1. **安装 chromium**（`browser-actions/setup-chrome@v1`，固定装 `stable` 版，不依赖 runner 自带、版本会漂移的系统浏览器）并通过 `DS_TEST_CHROMIUM` 环境变量（见 `tests/conftest.py`）指给 pytest。
 2. **校验 `index.html` 与源码同步**：重新跑一次 `python3 build.py demo`，逐字节比对产物和仓库里已提交的 `index.html`，不一致就让 CI 失败并打印 diff。这是为了防止"改了 `src/`/`demo/` 忘了本地 build 就 push"——那会让 GitHub Pages 线上页面悄悄落后于仓库代码。`tests/test_build.py::test_index_html_is_tracked_and_matches_demo_build` 其实也测了同一件事，这一步是独立的第二道闸门，报错更直白，也不依赖那条 pytest 用例将来不被误删。
-3. **跑 `python3 -m pytest tests/ -v` 全量测试**：61 个用例，含 `?selftest=1` 下的全部 214 条浏览器断言（`tests/test_browser.py` 里依赖 `selftest` fixture 的 12 个用例都会真正拉起 headless chromium 渲染并解析结果，不是只跑不需要浏览器的那部分）。`build.py` 的 `guard()`（零外链 + 去标识化）在 `build()` 内部无条件执行，`test_build.py` 里已有专门用例核验其拦截逻辑，这一步顺带覆盖，不重复实现。
+3. **跑 `python3 -m pytest tests/ -v` 全量测试**：61 个用例，含 `?selftest=1` 下的全部 233 条浏览器断言（`tests/test_browser.py` 里依赖 `selftest` fixture 的 12 个用例都会真正拉起 headless chromium 渲染并解析结果，不是只跑不需要浏览器的那部分）。`build.py` 的 `guard()`（零外链 + 去标识化）在 `build()` 内部无条件执行，`test_build.py` 里已有专门用例核验其拦截逻辑，这一步顺带覆盖，不重复实现。
 
 **已知取舍**：目前判断公开 GitHub-hosted runner 上的 headless chromium（`--headless --disable-gpu --no-sandbox --virtual-time-budget=8000`）跑这套自测足够稳定，所以 CI 没有单独拆分"只跑非浏览器部分"的降级模式。如果未来观察到浏览器断言在 CI 上偶发失败（headless 环境差异导致的渲染抖动，而不是真实回归），优先修 `conftest.py` 的渲染稳定性，而不是静默跳过浏览器测试；万一必须临时降级，请在 workflow 注释和这里同时写明降级范围和原因，不要悄悄跳过。
 
@@ -282,3 +314,5 @@ jobs:
 本项目采用 [MIT License](LICENSE)。
 
 内联于 `src/vendor/chart.umd.js` 的 [Chart.js](https://www.chartjs.org) 4.4.0 同样是 MIT 许可，版权声明保留在该文件头部，未作改动。
+
+内联于 `src/vendor/chartjs-chart-sankey.umd.js` 的 [chartjs-chart-sankey](https://github.com/kurkle/chartjs-chart-sankey) v0.12.1（(c) 2024 Jukka Kurkela）同样是 MIT 许可，版权声明保留在该文件头部，未作改动。它不引入除 `Chart` 以外的新全局变量——注册方式是 `Chart.register(...)`，挂在 `chart.umd.js` 已经创建的 `window.Chart` 上，不需要在「只暴露 `DS` 一个全局」这条约束上额外开口子。
