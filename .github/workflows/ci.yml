@@ -1,0 +1,70 @@
+name: CI
+
+# 校验专用：不部署。GitHub Pages 仍然走仓库 Settings 里配置的
+# "Deploy from a branch"（main 分支根目录），本 workflow 只负责在
+# push / PR 时把本地那套 `python3 -m pytest tests/ -v` 跑一遍、并额外
+# 校验 index.html 这个 Pages 发布入口有没有跟 src/ 同步 build 过。
+# 升级成 "GitHub Actions 构建部署" 需要人工去 Settings → Pages 把 Source
+# 切换成 GitHub Actions，这次不做——见 README「CI」一节的参考片段。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同一分支/PR 有新 push 时取消还在跑的旧 run，省免费额度。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装 pytest
+        # 仓库没有 requirements.txt：build.py / validate_palette.py / tests/
+        # 只依赖标准库 + pytest，不需要 numpy/pillow 之类本机顺带装着的包。
+        run: pip install pytest
+
+      - name: 安装 chromium（供浏览器自测套件用）
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - name: 校验 index.html 与源码同步
+        # tests/test_build.py::test_index_html_is_tracked_and_matches_demo_build
+        # 其实已经做了同一件事，这里再单独跑一遍 build.py 并显式 diff，
+        # 是为了：1) 给出比 pytest 断言失败更直白的报错；2) 哪怕将来那条
+        # pytest 用例被误删，这道独立闸门依然在。
+        # build('demo') 会把 demo.html 和根目录 index.html 一起原地重写，
+        # 所以先把已提交的 index.html 存一份副本，build 完再逐字节比较。
+        run: |
+          cp index.html index.html.committed
+          python3 build.py demo
+          if ! diff -q index.html.committed index.html > /dev/null; then
+            echo "::error file=index.html::index.html 与 \`python3 build.py demo\` 的产物不一致——改了 src/ 或 demo/ 之后忘了重新 build 并提交 index.html。本地跑一下 \`python3 build.py demo\` 再提交。"
+            diff -u index.html.committed index.html | head -c 4000 || true
+            exit 1
+          fi
+          rm index.html.committed
+
+      - name: 跑完整测试套件（含浏览器自测 214 条断言）
+        # DS_TEST_CHROMIUM 覆盖 tests/conftest.py 里默认的本机 snap 路径
+        # （/snap/bin/chromium，CI 跑者上不存在）。guard() 的零外链/去标识化
+        # 硬约束已经在 build()/tests/test_build.py 里覆盖，这里不重复实现，
+        # 只要这条命令整体通过就等于它们也通过了——guard() 一旦拦截，
+        # build() 会抛异常，对应的 pytest 用例直接失败。
+        env:
+          DS_TEST_CHROMIUM: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: python3 -m pytest tests/ -v

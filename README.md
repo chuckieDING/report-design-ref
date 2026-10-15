@@ -221,6 +221,62 @@ python3 -m pytest tests/ -v
 
 无 node 环境，测试走两条路：pytest 直接测 `build.py` 的内联/守卫逻辑与色板 WCAG 合规；浏览器行为断言由 `demo/selftest.js` 在 `?selftest=1` 下于真实 DOM/Canvas 环境中运行，经 `chromium --headless --dump-dom` 把结果回传给 pytest 解析（见 `tests/test_browser.py`）。
 
+## CI
+
+`.github/workflows/ci.yml` 在 push 到 `main` 和 PR 时自动跑，一个 job 三步：
+
+1. **安装 chromium**（`browser-actions/setup-chrome@v1`，固定装 `stable` 版，不依赖 runner 自带、版本会漂移的系统浏览器）并通过 `DS_TEST_CHROMIUM` 环境变量（见 `tests/conftest.py`）指给 pytest。
+2. **校验 `index.html` 与源码同步**：重新跑一次 `python3 build.py demo`，逐字节比对产物和仓库里已提交的 `index.html`，不一致就让 CI 失败并打印 diff。这是为了防止"改了 `src/`/`demo/` 忘了本地 build 就 push"——那会让 GitHub Pages 线上页面悄悄落后于仓库代码。`tests/test_build.py::test_index_html_is_tracked_and_matches_demo_build` 其实也测了同一件事，这一步是独立的第二道闸门，报错更直白，也不依赖那条 pytest 用例将来不被误删。
+3. **跑 `python3 -m pytest tests/ -v` 全量测试**：61 个用例，含 `?selftest=1` 下的全部 214 条浏览器断言（`tests/test_browser.py` 里依赖 `selftest` fixture 的 12 个用例都会真正拉起 headless chromium 渲染并解析结果，不是只跑不需要浏览器的那部分）。`build.py` 的 `guard()`（零外链 + 去标识化）在 `build()` 内部无条件执行，`test_build.py` 里已有专门用例核验其拦截逻辑，这一步顺带覆盖，不重复实现。
+
+**已知取舍**：目前判断公开 GitHub-hosted runner 上的 headless chromium（`--headless --disable-gpu --no-sandbox --virtual-time-budget=8000`）跑这套自测足够稳定，所以 CI 没有单独拆分"只跑非浏览器部分"的降级模式。如果未来观察到浏览器断言在 CI 上偶发失败（headless 环境差异导致的渲染抖动，而不是真实回归），优先修 `conftest.py` 的渲染稳定性，而不是静默跳过浏览器测试；万一必须临时降级，请在 workflow 注释和这里同时写明降级范围和原因，不要悄悄跳过。
+
+**不在 CI 里覆盖的东西**：色板之外的视觉回归（没有截图对比/像素级 diff）、真实 Windows/移动端浏览器（只测 headless chromium，不测 Safari/Firefox 的实际渲染差异）、Pages 发布后的线上可达性（CI 只校验仓库内容自洽，不探测 `https://chuckieding.github.io/report-design-ref/` 实际是否已更新）。
+
+### 将来想升级成 "GitHub Actions 构建部署" 怎么办
+
+现在 Pages 用的是 **"Deploy from a branch"**：`index.html` 必须提交到仓库根目录，CI 只负责校验它没有过期。好处是简单、不依赖 Actions 配额；代价是每次改源码都要记得本地 `python3 build.py demo` 再提交一份构建产物到版本库里。
+
+如果以后想换成 **"GitHub Actions" 模式**（好处：`index.html`/`demo.html` 不必再入库，PR 里也不会再出现"一大坨构建产物 diff"），需要两步，这次都不做：
+
+1. 仓库 Settings → Pages → Build and deployment → Source，手动切换成 **GitHub Actions**（这一步必须由有仓库管理权限的人在网页上做，CI 配置文件做不到）。
+2. 新增一个单独的部署 workflow（不要塞进 `ci.yml`，避免每次 PR 都触发部署预检），大致形状如下，仅供将来参考，**没有被启用**：
+
+```yaml
+# .github/workflows/deploy.yml（参考草稿，未启用）
+name: Deploy Pages
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 build.py demo   # 产出 demo.html；Pages 入口改从这里取
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .   # 或者专门整理出一个 dist/ 目录再指过去
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+```
+
+切过去之后，`ci.yml` 里"校验 index.html 与源码同步"那一步连同仓库里的 `index.html` 本体都可以删掉——那时候线上内容由这条部署 workflow 现场 build 产出，不再需要一份跟 `demo.html` 保持字节级同步的提交副本。
+
 ## 许可
 
 本项目采用 [MIT License](LICENSE)。
