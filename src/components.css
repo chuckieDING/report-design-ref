@@ -1,0 +1,442 @@
+/* components.css — 视觉组件层。颜色一律走 src/tokens.css 的变量，
+   不得出现硬编码颜色字面量（#xxx / rgba(...)）。
+   仅两处例外：.ds-btn.primary 的 color:#fff（白字压主色按钮，已验达标）
+   与模态遮罩 rgba(0,0,0,.45)（纯黑半透明，与主题无关）。 */
+
+/* ---------- 布局 ---------- */
+/* 页面容器铺满窗口宽度（沿用参照实现 .container { max-width:100%; padding:24px 32px }）。 */
+.ds-wrap { max-width: 100%; margin: 0; padding: 24px 32px 80px; }
+.ds-grid { display: grid; gap: 24px; margin-bottom: 24px; }
+/* Grid 子项默认 min-width:auto，会被里面定型过宽的 Chart.js 画布（全屏时 inline
+   width 1358px）撑开，退出全屏后卡片/宿主不收回来。这是 Chart.js 响应式对容器的
+   基本要求，所以作为库的默认值。 */
+.ds-grid > * { min-width: 0; }
+/* 图表网格：固定两列（窗口再宽也只两列，卡片随窗口变宽）。.ds-grid-2 是沿用的旧类名，
+   与 .ds-charts-grid 同义。只在手机宽度（<=760px）才退成单列。 */
+.ds-grid-2, .ds-charts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ds-grid-4 { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+@media (max-width: 760px) { .ds-grid-2, .ds-charts-grid { grid-template-columns: 1fr; } }
+/* 可选：需要整行宽度的卡片自行加 .ds-card-wide，占满网格一整行（demo 默认不用） */
+.ds-grid > .ds-card-wide { grid-column: 1 / -1; }
+
+/* ---------- 顶栏与标签页 ---------- */
+.ds-nav {
+  display: flex; align-items: center; gap: 20px;
+  background: var(--nav-bg);
+  padding: 0 24px; position: sticky; top: 0; z-index: 50;
+}
+.ds-nav-title { font-size: 15px; font-weight: 700; padding: 14px 0; color: var(--nav-text); }
+.ds-tabs { display: flex; gap: 4px; }
+.ds-tab {
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  color: var(--color-text-secondary); font: inherit; font-size: 13px;
+  padding: 14px 12px; cursor: pointer; transition: color var(--transition);
+}
+.ds-tab:hover { color: var(--color-text); }
+.ds-tab[aria-selected="true"] { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 600; }
+/* 顶栏是深底，页签与按钮改用顶栏专用 token（页面内的 .ds-tabs 不受影响） */
+.ds-nav .ds-tab { color: var(--nav-text-secondary); }
+.ds-nav .ds-tab:hover { color: var(--nav-text); }
+.ds-nav .ds-tab[aria-selected="true"] { color: var(--nav-accent); border-bottom-color: var(--nav-accent); }
+.ds-nav .ds-btn.secondary { background: transparent; color: var(--nav-text); border-color: var(--nav-border); }
+.ds-nav .ds-btn.secondary:hover { background: transparent; border-color: var(--nav-accent); color: var(--nav-accent); }
+/* 顶栏里的紧凑控件：小标签 + 控件（如 DS.seg 分段按钮），全页级设置放这里而不是侧栏菜单项。
+   分段按钮在深底顶栏上改用顶栏 token：未选中 = 透明底 + 次级文字，选中 = --nav-accent 底 + --nav-bg 字
+   （与"选中页签 on 顶栏底"同一对颜色，对比度对称 ≈ 8.1 / 9.0）。 */
+.ds-nav-ctl { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.ds-nav-ctl-label { font-size: 12px; color: var(--nav-text-secondary); white-space: nowrap; }
+.ds-nav .ds-seg { border-color: var(--nav-border); }
+.ds-nav .ds-seg-btn { background: transparent; color: var(--nav-text-secondary); border-left-color: var(--nav-border); }
+.ds-nav .ds-seg-btn:hover { background: transparent; color: var(--nav-text); }
+.ds-nav .ds-seg-btn[aria-pressed="true"] { background: var(--nav-accent); color: var(--nav-bg); }
+.ds-nav .ds-seg-btn:focus-visible { outline-color: var(--nav-accent); outline-offset: -3px; }
+/* 窄屏：顶栏放不下一行时换行（标题一行、控件一行），绝不横向溢出；每行上下留 8px */
+@media (max-width: 760px) {
+  .ds-nav { flex-wrap: wrap; gap: 8px 12px; padding-top: 8px; padding-bottom: 8px; }
+  .ds-nav-title { padding: 4px 0; }
+  .ds-nav-ctl { flex-wrap: wrap; }
+}
+.ds-panel[hidden] { display: none; }
+
+/* ---------- 卡片与 KPI ---------- */
+.ds-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 24px; margin-bottom: 24px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+/* 网格里的间距由 gap 管，卡片自己不再叠 margin-bottom */
+.ds-grid > .ds-card, .ds-grid > .ds-stat { margin-bottom: 0; }
+.ds-card:hover { border-color: var(--color-primary); box-shadow: var(--shadow-md); }
+.ds-card-title { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--color-text); }
+/* 卡片标题写图表/组件类型，演示的能力写在说明文字里 */
+.ds-card-desc { font-size: 12px; color: var(--color-text-secondary); margin: -4px 0 8px; line-height: 1.55; }
+/* 卡片标题栏：左标题、右操作区（如分段按钮 .ds-seg）。标题仍是 .ds-card-title。 */
+.ds-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 10px; min-height: 26px; }
+.ds-card-head .ds-card-title { margin: 0; }
+
+/* ---------- 分段按钮 DS.seg：一组互斥的 toggle 按钮 ---------- */
+.ds-seg { display: inline-flex; flex: none; border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+.ds-seg-btn {
+  font: inherit; font-size: 12px; line-height: 1; padding: 5px 10px; min-width: 32px;
+  background: var(--color-surface); color: var(--color-text-secondary);
+  border: 0; border-left: 1px solid var(--color-border); cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.ds-seg-btn:first-child { border-left: 0; }
+.ds-seg-btn:hover { background: var(--color-surface-hover); color: var(--color-text); }
+.ds-seg-btn[aria-pressed="true"] { background: var(--color-primary-tint); color: var(--color-primary-ink); font-weight: 600; }
+.ds-seg-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.ds-stat { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 16px 18px; }
+.ds-stat-label { font-size: 12px; color: var(--color-text-muted); display: flex; align-items: center; gap: 4px; }
+.ds-stat-value { font-size: 26px; font-weight: 600; margin-top: 6px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.ds-stat-delta { font-size: 12px; margin-top: 4px; color: var(--color-text-secondary); }
+/* 12px 常规文字贴在卡片底上，4.5:1 门槛：必须用 -ink，不能用填充/图表用途的基色 */
+.ds-stat-delta.up { color: var(--color-success-ink); }
+.ds-stat-delta.down { color: var(--color-danger-ink); }
+
+/* ---------- 数据表 ---------- */
+.ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ds-table th {
+  background: var(--color-surface-alt); color: var(--color-text-secondary);
+  font-weight: 600; text-align: left; padding: 9px 12px;
+  border-bottom: 1px solid var(--color-border);
+  position: sticky; top: 0; cursor: pointer; user-select: none; white-space: nowrap;
+}
+.ds-table th[aria-sort="ascending"]::after { content: " ▲"; font-size: 9px; }
+.ds-table th[aria-sort="descending"]::after { content: " ▼"; font-size: 9px; }
+.ds-table td { padding: 9px 12px; border-bottom: 1px solid var(--color-border); }
+.ds-table td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+/* 数字列表头跟数据列同一个 .num 类名、配对右对齐（用户报的 bug）：
+   `th` 默认靠 `.ds-table th { text-align: left }` 固定左对齐，数字列的
+   `<th>` 之前没有任何机制让它跟着 `td.num` 一起右对齐——两者分别用各自
+   的默认/显式对齐规则，视觉上整列错位将近一个列宽，标题下面显示的其实
+   是左边那一列的数字。`DS.tables.sortable()` 会在初始化/重渲染后重新
+   调用时自动给数字列的 `<th>` 补上这个类（见 src/interactions.js），
+   这里只负责类名存在时该长什么样。 */
+.ds-table th.num { text-align: right; }
+.ds-table tbody tr:hover { background: var(--color-surface-hover); }
+
+/* ---------- 徽标与按钮 ---------- */
+.ds-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+/* 徽标背景用 -tint（静态 hex，非文本门槛），文字用 -ink（已验 on 对应 tint >= 4.5） */
+.ds-badge.blue  { background: var(--color-primary-tint); color: var(--color-primary-ink); }
+.ds-badge.green { background: var(--color-success-tint); color: var(--color-success-ink); }
+.ds-badge.amber { background: var(--color-warning-tint); color: var(--color-warning-ink); }
+.ds-badge.red   { background: var(--color-danger-tint);  color: var(--color-danger-ink); }
+.ds-btn {
+  font: inherit; font-size: 13px; padding: 7px 14px; border-radius: var(--radius-sm);
+  border: 1px solid transparent; cursor: pointer; transition: background var(--transition), border-color var(--transition);
+}
+.ds-btn.primary { background: var(--color-primary); color: #fff; }
+.ds-btn.primary:hover { background: var(--color-primary-dark); }
+/* 边框是这个按钮唯一的视觉边界（背景与所在卡片同色），用 --color-border-strong
+   而不是 --color-border——后者 on --color-surface 只有 1.23:1(浅)/1.70:1(深)，
+   达不到 WCAG 1.4.11 对非文本 UI 边界的 3:1（Review D5）。 */
+.ds-btn.secondary { background: var(--color-surface); color: var(--color-text); border-color: var(--color-border-strong); }
+.ds-btn.secondary:hover { background: var(--color-surface-hover); border-color: var(--color-primary); }
+.ds-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+/* ---------- 提示条 ---------- */
+/* 背景用对应的 -tint，边框用对应基色（非文本 UI，3:1 足够），文字保持 --color-text */
+.ds-banner { padding: 12px 16px; border-radius: var(--radius-md); font-size: 13px; line-height: 1.55; border: 1px solid var(--color-border); background: var(--color-surface-alt); color: var(--color-text); }
+.ds-wrap > .ds-banner { margin-bottom: 24px; }
+.ds-banner.ok { border-color: var(--color-success); border-style: dashed; background: transparent; color: var(--color-text-muted); padding: 6px 14px; font-size: 12px; }
+.ds-banner.warn { border-color: var(--color-warning); background: var(--color-warning-tint); color: var(--color-text); }
+.ds-banner.bad { border-color: var(--color-danger); background: var(--color-danger-tint); color: var(--color-text); }
+.ds-banner.info { border-color: var(--color-primary); background: var(--color-primary-tint); color: var(--color-text); }
+
+/* ---------- 模态与上传区 ---------- */
+.ds-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 160; }
+/* 160 > 全屏图表的 150：全屏状态下从图表工具条打开的弹窗（数据表）必须盖在全屏图表之上；
+   仍低于 toast(200)。 */
+.ds-modal-backdrop[hidden] { display: none; }
+.ds-modal { background: var(--color-surface); border-radius: var(--radius-lg); box-shadow: var(--shadow-xl); max-width: 90vw; max-height: 88vh; overflow: auto; padding: 20px; }
+/* 同上（Review D5）：虚线边框是这个区域唯一的可识别轮廓，用 --color-border-strong。 */
+.ds-dropzone { border: 2px dashed var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-surface); padding: 32px; text-align: center; color: var(--color-text-secondary); transition: border-color var(--transition); }
+.ds-dropzone.dragover { border-color: var(--color-primary); background: var(--color-surface-hover); }
+
+/* ---------- 图表数据表弹窗（DS.charts.attachTable / openTable） ---------- */
+.ds-table-modal { min-width: min(560px, 80vw); display: flex; flex-direction: column; gap: 12px; }
+.ds-table-modal-head { display: flex; align-items: center; gap: 10px; }
+.ds-table-modal-head h3 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; color: var(--color-text); }
+.ds-table-modal-search {
+  width: 200px; font: inherit; font-size: 13px; padding: 6px 10px;
+  background: var(--color-surface); color: var(--color-text);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
+}
+.ds-table-modal-search:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+.ds-table-modal-close {
+  width: 28px; height: 28px; padding: 0; line-height: 1; font: inherit; font-size: 18px;
+  background: var(--color-surface); color: var(--color-text-secondary);
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm); cursor: pointer;
+}
+.ds-table-modal-close:hover { color: var(--color-primary); border-color: var(--color-primary); }
+.ds-table-modal-body { overflow: auto; max-height: 62vh; min-height: 200px; }
+.ds-table-modal-empty { padding: 24px; text-align: center; color: var(--color-text-muted); font-size: 13px; }
+.ds-table-modal-empty[hidden] { display: none; }
+
+/* ---------- toast ---------- */
+.ds-toast-host { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
+.ds-toast { background: var(--color-surface); border: 1px solid var(--color-border); border-left: 3px solid var(--color-primary); border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); padding: 10px 14px; font-size: 13px; }
+
+/* ---------- 图表容器与空态 ---------- */
+.ds-chart-host { position: relative; height: 350px; min-width: 0; }
+/* 空数据态只放一行提示文字，不需要和真实图表一样高的画布——沿用整卡
+   350px 高在交付页上会留出大片空白。单独给这种"确定不会画图"的宿主
+   一个矮一截的变体，内容（.ds-chart-empty）仍然用 position:absolute
+   居中撑满，不用动。 */
+.ds-chart-host--compact { height: 90px; }
+.ds-chart-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--color-text-muted); font-size: 13px;
+  border: 1px dashed var(--color-border); border-radius: var(--radius-md);
+}
+
+/* ---------- 图表缩放工具条（Task 6） ---------- */
+.ds-chart-toolbar {
+  position: absolute; top: 4px; right: 6px;
+  display: flex; align-items: center; gap: 2px; z-index: 5;
+}
+.ds-chart-btn {
+  width: 22px; height: 22px; line-height: 1; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-surface); color: var(--color-text-secondary);
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+.ds-chart-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
+.ds-chart-btn svg { display: block; }
+.ds-chart-hint { font-size: 10px; color: var(--color-text-muted); margin-left: 4px; white-space: nowrap; }
+/* 全屏：遮罩（.ds-fs-backdrop，body 末尾）+ 居中面板（宿主本身）+ 标题栏（.ds-fs-head）。
+   画布仍留在原宿主里、不搬家——Chart.js 靠"量容器"响应，搬动 DOM 会丢尺寸语义，
+   而且往返后必须精确恢复画布与容器尺寸。面板：宽 min(95vw,1400px)、高 92vh、
+   上下左右居中；顶部留出标题栏高度（padding-top），Chart.js 量容器时会扣掉 padding。 */
+.ds-fs-backdrop {
+  position: fixed; inset: 0; z-index: 149;
+  background: var(--color-overlay); backdrop-filter: blur(4px);
+}
+.ds-chart-host.ds-chart-fullscreen {
+  position: fixed; z-index: 150;
+  top: 4vh; left: 0; right: 0; margin: 0 auto;
+  /* !important：宿主常带自己的 inline 宽高或 #id 规则（比如单独加高的大图），全屏面板尺寸不能被它们盖掉 */
+  width: min(95vw, 1400px) !important; height: 92vh !important;
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg); padding: 64px 24px 24px; box-shadow: var(--shadow-xl);
+}
+.ds-fs-head {
+  position: absolute; top: 24px; left: 24px; right: 24px; height: 28px;
+  display: flex; align-items: center; gap: 12px;
+}
+.ds-fs-title { flex: 1; min-width: 0; font-size: 16px; font-weight: 600; color: var(--color-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ds-fs-head .ds-chart-btn { width: 28px; height: 28px; font-size: 18px; }
+/* 全屏时工具条并进标题栏：在 × 左侧 */
+.ds-chart-fullscreen > .ds-chart-toolbar { top: 27px; right: 64px; }
+
+/* ---------- 桑基图节点筛选条（通用两侧多选下拉，见 charts.js 桑基小节）---------- */
+.ds-sankey-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.ds-sankey-dropdown { position: relative; display: inline-block; }
+.ds-sankey-drop-badge {
+  display: inline-block; margin-left: 4px; font-size: 11px; font-weight: 600;
+  background: var(--color-primary-tint); color: var(--color-primary-ink);
+  border-radius: 999px; padding: 0 6px;
+}
+.ds-sankey-drop-badge[hidden] { display: none; }
+.ds-sankey-drop-list {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; min-width: 200px;
+  max-height: 220px; overflow: auto; background: var(--color-surface);
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md); padding: 4px 0;
+}
+.ds-sankey-drop-list[hidden] { display: none; }
+.ds-sankey-drop-item {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: 12px;
+  cursor: pointer; color: var(--color-text);
+}
+.ds-sankey-drop-item:hover { background: var(--color-surface-hover); }
+.ds-sankey-drop-item.all { border-bottom: 1px solid var(--color-border); font-weight: 600; }
+.ds-sankey-caption {
+  position: absolute; top: 4px; left: 2px; z-index: 4; font-size: 11px;
+  color: var(--color-text-muted); pointer-events: none;
+}
+.ds-sankey-drop-count { margin-left: auto; color: var(--color-text-muted); font-size: 11px; }
+
+/* ---------- 特型图：甘特 / 热力（Task 7，手写 SVG） ---------- */
+/* 字体/颜色都和 Chart.js 图表共用同一套 token：字体走 --font-sans，颜色
+   由 charts-svg.js 从 DS.charts.themeColors() 取值后以 SVG 属性写在元素上，
+   这里只负责排版层面的东西（不引入任何颜色字面量）。 */
+.ds-svg-chart { display: block; font-family: var(--font-sans); max-width: 100%; }
+.ds-svg-chart text { user-select: none; }
+
+/* ---------- 甘特图 DS.svg.gantt（src/gantt.js，HTML 元素绘制） ----------
+   几何尺寸（行高 36、条 top 7 高 24、轴高 30+标记行×22、药丸高 20）在 gantt.js 里也有一份
+   常量，两边要一起改。条的底色/字色由 JS 从 token 解析后写成内联样式；其余颜色全走变量。
+   层级：刻度数字 2 < 标记线 5 < 悬停的条 6 < 标记线标签 7 < sticky 行标签 8 < 左上角 9。
+   标记线容器不设 z-index（不建层叠上下文），线与标签才能和条在同一层叠上下文里比较。 */
+.ds-gantt { font-family: var(--font-mono); color: var(--color-text); }
+.ds-gantt-scroll {
+  overflow-x: auto; overflow-y: hidden;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+/* overflow: clip 而不是 hidden：hidden 会让它变成滚动容器，行标签的 sticky 就改成相对它（不滚动）而失效 */
+.ds-gantt-inner { position: relative; width: 100%; overflow: clip; }
+.ds-gantt-head { display: flex; border-bottom: 1px solid var(--color-border); box-sizing: border-box; }
+.ds-gantt-corner {
+  flex: none; position: sticky; left: 0; z-index: 9; background: var(--color-surface);
+  font: 600 11px var(--font-sans); color: var(--color-text-muted);
+  display: flex; align-items: flex-end; justify-content: flex-end; padding: 0 8px 4px 4px; box-sizing: border-box;
+}
+.ds-gantt-axis { position: relative; flex: 1 1 auto; min-width: 0; height: 100%; }
+.ds-gantt-tick { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--chart-grid); }
+.ds-gantt-tick-text {
+  position: absolute; bottom: 2px; left: 0; transform: translateX(-50%); z-index: 2;
+  font-size: 10px; line-height: 12px; padding: 1px 4px; border-radius: 5px; white-space: nowrap;
+  color: var(--chart-axis); background: var(--color-surface);
+}
+.ds-gantt-tick-text.is-start { transform: none; left: -1px; }
+.ds-gantt-tick-text.is-end { transform: translateX(-100%); left: -1px; }
+.ds-gantt-row { display: flex; align-items: center; box-sizing: border-box; border-bottom: 1px solid var(--color-border); }
+.ds-gantt-body > .ds-gantt-row:last-child { border-bottom: 0; }
+.ds-gantt-label {
+  flex: none; position: sticky; left: 0; z-index: 8; align-self: stretch;
+  display: flex; align-items: center; justify-content: flex-end; box-sizing: border-box;
+  padding: 0 8px 0 4px; background: var(--color-surface);
+  font-size: 11px; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden;
+}
+.ds-gantt-track { position: relative; flex: 1 1 auto; min-width: 0; align-self: stretch; }
+.ds-gantt-bar {
+  position: absolute; top: 7px; height: 24px; box-sizing: border-box;
+  display: flex; align-items: center; padding: 0 6px; overflow: hidden; white-space: nowrap;
+  border-radius: 4px; font-size: 10px; font-weight: 600; cursor: default;
+  box-shadow: var(--shadow-sm); transition: transform 100ms ease, box-shadow 100ms ease;
+}
+.ds-gantt-bar:hover { transform: translateY(-1px); box-shadow: var(--shadow-lg); z-index: 6; }
+/* small：时长。不加 opacity——半透明会把字色往底色上混，条内字色的 4.5:1 就不成立了 */
+.ds-gantt-bar small { font-size: .85em; font-weight: 500; margin-left: 4px; }
+.ds-gantt-trunc { font-weight: 400; margin-left: 3px; }
+/* 不写字的窄条去掉内边距：border-box 下 6+6 的内边距会把 8px 的最小宽撑成 12px */
+.ds-gantt-bar.is-narrow { padding: 0; }
+.ds-gantt-bar.is-lane { padding: 0; border-radius: 2px; box-shadow: none; }
+.ds-gantt-bar.is-lane:hover { transform: scale(1.05); z-index: 6; }
+.ds-gantt-icon {
+  display: inline-flex; align-items: center; flex: none; margin-right: 3px; line-height: 1;
+  filter: drop-shadow(0 0 1px var(--gantt-icon-halo));
+}
+.ds-gantt-icon svg { display: block; }
+/* 入场：只在首次绘制播放（换主题/redrawIn 的重画不再闪一次）。用 clip-path 做"从左展开"，
+   不用 scaleX——transform 会改变 getBoundingClientRect，动画期间量到的条宽会偏小 5%。
+   fill-mode 用 backwards：结束后不残留 clip-path，否则悬停阴影会被裁掉。 */
+.ds-gantt--anim .ds-gantt-bar { animation: ds-gantt-in 320ms cubic-bezier(0.4, 0, 0.2, 1) backwards; }
+@keyframes ds-gantt-in {
+  from { opacity: 0; clip-path: inset(0 5% 0 0); }
+  to { opacity: 1; clip-path: inset(0 0 0 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ds-gantt--anim .ds-gantt-bar { animation: none; }
+  .ds-gantt-bar { transition: none; }
+}
+/* 标记线：容器宽 0、竖跨轴与全部资源行；线从自己的标签下方（top 内联）一直画到底 */
+.ds-gantt-markers { position: absolute; top: 0; bottom: 0; right: 0; pointer-events: none; }
+.ds-gantt-marker { position: absolute; top: 0; bottom: 0; width: 0; }
+.ds-gantt-marker-line {
+  position: absolute; left: -1px; bottom: 0; width: 0; z-index: 5;
+  border-left-width: 2px; border-left-style: dashed; border-left-color: currentColor;
+}
+.ds-gantt-marker-label {
+  position: absolute; z-index: 7; box-sizing: border-box; height: 20px;
+  padding: 0 5px; border: 1px solid currentColor; border-radius: 8px;
+  background: var(--color-surface); box-shadow: 0 0 0 2px var(--color-surface);
+  font-size: 10px; font-weight: 600; line-height: 18px; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 图例：颜色档 chip / 状态 / 每条标记线；悬浮显示成员或说明 */
+.ds-gantt-legend {
+  display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px;
+  font: 11px var(--font-sans); color: var(--color-text-secondary);
+}
+.ds-gantt-legend-item { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.ds-gantt-legend-text { color: var(--color-text-secondary); }
+.ds-gantt-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.ds-gantt-swatch-line { display: inline-block; width: 0; height: 11px; flex: none; border-left: 2px dashed currentColor; }
+.ds-gantt-legend-item .ds-gantt-icon { margin-right: 0; color: var(--color-text-secondary); filter: none; }
+/* 悬浮框：挂 body、fixed、不吃鼠标事件；显隐直接改 opacity（同步可观测，不靠过渡） */
+.ds-gantt-tip {
+  position: fixed; left: 0; top: 0; z-index: 9999; pointer-events: none; opacity: 0;
+  max-width: 260px; padding: 8px 10px; border-radius: 7px; box-shadow: var(--shadow-lg);
+  background: var(--color-text); color: var(--color-surface);
+  font: 11px/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-all;
+}
+.ds-gantt-empty {
+  padding: 32px 16px; text-align: center; font: 13px var(--font-sans); color: var(--color-text-muted);
+  border: 1px dashed var(--color-border); border-radius: var(--radius-md);
+}
+.ds-gantt-details { margin-top: 12px; font-family: var(--font-sans); }
+.ds-gantt-details > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--color-text-secondary); padding: 4px 0; }
+.ds-gantt-details-body { max-height: 320px; overflow: auto; margin-top: 6px; }
+
+/* ---------- 侧边栏导航 DS.sidebar（左侧菜单 + 右侧面板；沿用参照实现的形态） ---------- */
+/* 顶栏高度约 50px，sticky 的 top 取"顶栏 + 间距"；页面顶栏更高/更矮时覆盖 --ds-side-top 即可。 */
+.ds-layout { --ds-side-top: 66px; display: flex; gap: 24px; align-items: flex-start; }
+.ds-side-main { flex: 1; min-width: 0; }
+.ds-sidebar {
+  width: 230px; flex-shrink: 0; box-sizing: border-box;
+  position: sticky; top: var(--ds-side-top); max-height: calc(100vh - var(--ds-side-top) - 16px); overflow: auto;
+  display: flex; flex-direction: column; gap: 2px; padding: 4px;
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+  transition: width 250ms ease;
+}
+.ds-sidebar.ds-collapsed { width: 52px; overflow: hidden; }
+.ds-side-item, .ds-side-toggle {
+  display: flex; align-items: center; gap: 10px; width: 100%; box-sizing: border-box;
+  background: none; border: 0; border-left: 3px solid transparent; border-radius: var(--radius-sm);
+  font: inherit; font-size: 12px; text-align: left; padding: 9px 14px; cursor: pointer;
+  color: var(--color-text-secondary); transition: all 250ms ease;
+}
+.ds-side-item:hover, .ds-side-toggle:hover { background: var(--color-surface-hover); color: var(--color-text); }
+.ds-side-item:focus-visible, .ds-side-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.ds-side-item[aria-current="true"] {
+  background: var(--color-primary-tint); color: var(--color-primary-ink);
+  border-left-color: var(--color-primary); font-weight: 600;
+}
+.ds-side-icon { width: 18px; height: 18px; flex-shrink: 0; opacity: .7; }
+.ds-side-item:hover .ds-side-icon { opacity: 1; }
+.ds-side-item[aria-current="true"] .ds-side-icon { opacity: 1; color: var(--color-primary); }
+.ds-side-toggle { color: var(--color-text-muted); border-bottom: 1px solid var(--color-border); border-radius: var(--radius-sm) var(--radius-sm) 0 0; margin-bottom: 2px; }
+.ds-side-toggle-icon { width: 18px; flex-shrink: 0; text-align: center; font-size: 14px; line-height: 1; }
+.ds-side-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ds-side-group { font-size: 11px; font-weight: 600; color: var(--color-text-muted); padding: 10px 14px 4px; white-space: nowrap; }
+/* 折叠：只剩图标；分组标题收起、留一条分隔线 */
+.ds-collapsed .ds-side-item, .ds-collapsed .ds-side-toggle { padding: 10px 4px; justify-content: center; gap: 0; min-height: 44px; }
+.ds-collapsed .ds-side-label { display: none; }
+.ds-collapsed .ds-side-group { font-size: 0; height: 0; padding: 0; margin: 4px 8px; border-top: 1px solid var(--color-border); }
+/* 折叠时悬停/聚焦浮出的文字提示（挂在 body，固定定位） */
+.ds-side-tip {
+  position: fixed; z-index: 170; pointer-events: none; white-space: nowrap;
+  background: var(--color-text); color: var(--color-surface);
+  padding: 5px 10px; border-radius: 4px; font-size: 12px; box-shadow: var(--shadow-md);
+}
+.ds-side-tip[hidden] { display: none; }
+/* 面板：切换时纯 CSS 淡入（display:none → 显示会重新触发动画，无需 JS 驱动） */
+.ds-side-panel[hidden] { display: none; }
+.ds-side-panel { animation: ds-side-fade 300ms ease; }
+@keyframes ds-side-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ds-side-panel { animation: none; } .ds-sidebar, .ds-side-item { transition: none; } }
+/* 窄屏（与图表网格同一个断点）：侧栏变成顶部横排，折叠按钮与折叠态不再起作用 */
+@media (max-width: 760px) {
+  .ds-layout { flex-direction: column; align-items: stretch; gap: 16px; }
+  .ds-sidebar, .ds-sidebar.ds-collapsed {
+    width: 100%; position: static; max-height: none; overflow: visible;
+    flex-direction: row; flex-wrap: wrap;
+  }
+  .ds-side-toggle, .ds-side-group { display: none; }
+  .ds-side-item, .ds-collapsed .ds-side-item {
+    width: auto; flex: 0 0 auto; padding: 9px 12px; gap: 8px; justify-content: flex-start; min-height: 0;
+    border-left-width: 0; border-bottom: 3px solid transparent;
+  }
+  .ds-side-item[aria-current="true"] { border-bottom-color: var(--color-primary); }
+  .ds-collapsed .ds-side-label { display: inline; }
+}
